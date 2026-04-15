@@ -31,21 +31,13 @@ or:
 import os
 import time
 import json
-import dataclasses
+import logging
+from typing import Tuple, List
 from p123_client import Pan123Client
+from config import P123FastLink, get_database, FileStatus, get_config, Config
 
 
-@dataclasses.dataclass
-class FileInfo:
-    """文件信息数据类，包含路径、大小、md5 等字段"""
-
-    md5: str
-    size: int
-    path: str
-    is_base62: bool = False  # 是否为 base62 etag
-
-
-class EtagConverter:
+class _EtagConverter:
     """ETag 转换工具类，提供 Base62/Hex ETag 到标准 MD5 的转换功能"""
 
     BASE62_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -109,7 +101,7 @@ class EtagConverter:
         return hex_str
 
 
-class JsonFileParser:
+class _JsonFileParser:
     """JSON 文件解析器，用于解析 123 网盘导出的文件列表"""
 
     def __init__(self, json_path: str):
@@ -121,7 +113,7 @@ class JsonFileParser:
         self.json_path = json_path
         self._data = None
 
-    def parse(self) -> list[FileInfo]:
+    def parse(self) -> list[P123FastLink]:
         """解析 json 文件，提取文件信息列表
 
         Returns:
@@ -145,9 +137,9 @@ class JsonFileParser:
                 if ("usesBase62EtagsInExport" not in file)
                 else file["usesBase62EtagsInExport"]
             )
-            md5 = etag if not file_uses_base62 else EtagConverter.to_md5(etag)
+            md5 = etag if not file_uses_base62 else _EtagConverter.to_md5(etag)
             file_info_list.append(
-                FileInfo(
+                P123FastLink(
                     md5=md5,
                     size=size,
                     path=os.path.join(common_path, path).replace("\\", "/"),
@@ -167,82 +159,272 @@ class Pan123Uploader:
             parent_id (int, optional): 上传的根目录 id. Defaults to 0.
             upload_interval (float, optional): 上传间隔时间(秒)，避免请求过快. Defaults to 0.5.
         """
-        self.parent_id = parent_id
+        self._cft_: Config = get_config()
+        self.parent_id = self._cft_.p123_parent_id
         self.upload_interval = upload_interval
-        self.client = Pan123Client()
+        self.client = Pan123Client(self._cft_)
 
-    def upload_file(self, file_info: FileInfo) -> bool:
-        """上传单个文件到 123 网盘
+    def json_to_db(self, json_path: str) -> Tuple[bool, str]:
+        """将json文件解析到db中（事务方式）
 
         Args:
-            file_info (FileInfo): 文件信息对象
+            json_path (str): json文档路径
 
         Returns:
-            bool: 上传是否成功
+            Tuple[bool, str]: (是否成功, 错误信息或成功消息)
         """
         try:
-            result = self.client.upload_by_md5_to_path(
-                file_md5=file_info.md5,
-                file_name=os.path.basename(file_info.path),
-                file_size=file_info.size,
-                remote_dir=os.path.dirname(file_info.path),
-                parent_id=self.parent_id,
-            )
-            time.sleep(self.upload_interval)
-            upload_id = result.get("UploadId", "")
-            if upload_id:
-                print(f"  -> 秒传失败，UploadId: {upload_id}")
-                return False  # 提供上传id, 说明没有妙传成功过, 需要后续分片上传
-            print(f"  -> 妙传成功: {file_info.path}")
-            return True
-        except Exception as e:
-            print(f"上传失败: {file_info.path} -> {e}")
-            return False
+            # 解析 JSON 文件
+            file_info_list = _JsonFileParser(json_path).parse()
+            if not file_info_list:
+                return False, "JSON 文件中没有找到任何文件"
 
-    def upload_by_json(self, json_path: str) -> list[FileInfo]:
-        """从 json 文件批量上传文件到 123 网盘
+            # 获取数据库实例
+            db = get_database()
+
+            # 开启事务，批量插入
+            db.db.begin()
+            try:
+                for link in file_info_list:
+                    # 检查是否已存在（根据 path）
+                    existing = db.get_by_path(link.path)
+                    if existing:
+                        # 如果已存在，跳过或更新
+                        continue
+                    db.insert(link)
+                # 提交事务
+                db.db.commit()
+                return True, f"成功插入 {len(file_info_list)} 条记录到数据库"
+            except Exception as e:
+                # 回滚事务
+                db.db.rollback()
+                raise e
+
+        except FileNotFoundError as e:
+            return False, f"文件不存在: {e}"
+        except json.JSONDecodeError as e:
+            return False, f"JSON 解析失败: {e}"
+        except Exception as e:
+            return False, f"数据库操作失败: {e}"
+
+    def json_to_db_batch(self, json_paths: List[str]) -> Tuple[bool, str]:
+        """将多个json文件解析到db中（事务方式）
 
         Args:
-            json_path (str): json 文件路径
+            json_paths (List[str]): json文档路径列表
 
         Returns:
-            list[FileInfo]: 上传失败的文件信息列表
+            Tuple[bool, str]: (是否成功, 错误信息或成功消息)
         """
-        file_info_list = JsonFileParser(json_path).parse()
-        fail_list = []
-        for file_info in file_info_list:
-            print(
-                f"正在上传: {file_info.path} (md5={file_info.md5}, size={file_info.size})"
-            )
-            success = self.upload_file(file_info)
-            if not success:
-                fail_list.append(file_info)
-        return fail_list
+        total_count = 0
+        try:
+            db = get_database()
 
-    @staticmethod
-    def save_fail_log(fail_list: list[FileInfo], output_path: str) -> None:
-        """将失败文件列表保存为 JSON 格式的日志文件
+            # 开启事务
+            db.db.begin()
+            try:
+                for json_path in json_paths:
+                    file_info_list = _JsonFileParser(json_path).parse()
+                    for link in file_info_list:
+                        existing = db.get_by_path(link.path)
+                        if existing:
+                            continue
+                        db.insert(link)
+                        total_count += 1
+
+                # 提交事务
+                db.db.commit()
+                return True, f"成功插入 {total_count} 条记录到数据库"
+            except Exception as e:
+                # 回滚事务
+                db.db.rollback()
+                raise e
+
+        except FileNotFoundError as e:
+            return False, f"文件不存在: {e}"
+        except json.JSONDecodeError as e:
+            return False, f"JSON 解析失败: {e}"
+        except Exception as e:
+            return False, f"数据库操作失败: {e}"
+
+    def upload_by_db(
+        self,
+        status: int = FileStatus.INIT,
+        limit: int = 100,
+    ) -> Tuple[bool, str, dict]:
+        """从数据库中读取待上传的文件进行秒传
 
         Args:
-            fail_list (list[FileInfo]): 失败文件信息列表
-            output_path (str): 日志文件输出路径
+            status: 要处理的文件状态，默认处理 INIT 状态的文件
+            limit: 每次处理的记录数限制
+
+        Returns:
+            Tuple[bool, str, dict]: (是否成功, 消息, 统计信息)
         """
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        log_data = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "total_failures": len(fail_list),
-            "usesBase62EtagsInExport": False,
-            "commonPath": "",
-            "files": [
-                {
-                    "path": file_info.path,
-                    "md5": file_info.md5,
-                    "size": file_info.size,
-                    "usesBase62EtagsInExport": len(file_info.md5)
-                    != 32,  # 根据 md5 长度判断是否为 base62
-                }
-                for file_info in fail_list
-            ],
+        db = get_database()
+        stats = {
+            "total": 0,
+            "success": 0,
+            "failed": 0,
+            "skipped": 0,
         }
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, ensure_ascii=False, indent=2)
+
+        try:
+            # 获取待处理的文件列表
+            file_list = db.get_by_status(status, limit=limit)
+            if not file_list:
+                return True, "没有需要上传的文件", stats
+
+            stats["total"] = len(file_list)
+
+            # 开启事务
+            db.db.begin()
+            try:
+                for link in file_list:
+                    try:
+                        # 更新状态为上传中
+                        db.update(link.p_id, status=FileStatus.UPLOADING)
+
+                        # 获取文件名和目录路径
+                        file_name = os.path.basename(link.path)
+                        remote_dir = os.path.dirname(link.path)
+
+                        # 调用秒传 API
+                        result = self.client.upload_by_md5_to_path(
+                            file_md5=link.md5,
+                            file_name=file_name,
+                            file_size=link.size,
+                            remote_dir=remote_dir,
+                            parent_id=self.parent_id,
+                        )
+
+                        # 等待间隔时间
+                        time.sleep(self.upload_interval)
+
+                        # 检查秒传结果
+                        upload_id = result.get("UploadId", "")
+                        if upload_id:
+                            # 秒传失败，需要后续分片上传
+                            db.update(
+                                link.p_id,
+                                status=FileStatus.FAILED,
+                                remark=f"秒传失败，需要分片上传，UploadId: {upload_id}",
+                            )
+                            print(
+                                f"秒传失败: {link.path}, size={link.size}, "
+                                f"UploadId={upload_id}"
+                            )
+                            stats["failed"] += 1
+                        else:
+                            # 秒传成功
+                            db.update(link.p_id, status=FileStatus.UPLOADED)
+                            print(
+                                f"上传成功: {link.path}, size={link.size}"
+                            )
+                            stats["success"] += 1
+
+                    except Exception as e:
+                        # 单个文件上传失败
+                        db.update(
+                            link.p_id,
+                            status=FileStatus.FAILED,
+                            remark=f"上传异常: {str(e)}",
+                        )
+                        print(
+                            f"上传异常: {link.path}, size={link.size}, error={e}"
+                        )
+                        stats["failed"] += 1
+
+                # 提交事务
+                db.db.commit()
+
+            except Exception as e:
+                # 回滚事务
+                db.db.rollback()
+                raise e
+
+            message = (
+                f"上传完成: 成功 {stats['success']}, "
+                f"失败 {stats['failed']}, "
+                f"跳过 {stats['skipped']}"
+            )
+            return True, message, stats
+
+        except Exception as e:
+            return False, f"上传过程发生错误: {e}", stats
+
+    # def upload_file(self, file_info: FileInfo) -> bool:
+    #     """上传单个文件到 123 网盘
+
+    #     Args:
+    #         file_info (FileInfo): 文件信息对象
+
+    #     Returns:
+    #         bool: 上传是否成功
+    #     """
+    #     try:
+    #         result = self.client.upload_by_md5_to_path(
+    #             file_md5=file_info.md5,
+    #             file_name=os.path.basename(file_info.path),
+    #             file_size=file_info.size,
+    #             remote_dir=os.path.dirname(file_info.path),
+    #             parent_id=self.parent_id,
+    #         )
+    #         time.sleep(self.upload_interval)
+    #         upload_id = result.get("UploadId", "")
+    #         if upload_id:
+    #             print(f"  -> 秒传失败，UploadId: {upload_id}")
+    #             return False  # 提供上传id, 说明没有妙传成功过, 需要后续分片上传
+    #         print(f"  -> 妙传成功: {file_info.path}")
+    #         return True
+    #     except Exception as e:
+    #         print(f"上传失败: {file_info.path} -> {e}")
+    #         return False
+
+    # def upload_by_json(self, json_path: str) -> list[FileInfo]:
+    #     """从 json 文件批量上传文件到 123 网盘
+
+    #     Args:
+    #         json_path (str): json 文件路径
+
+    #     Returns:
+    #         list[FileInfo]: 上传失败的文件信息列表
+    #     """
+    #     file_info_list = _JsonFileParser(json_path).parse()
+    #     fail_list = []
+    #     for file_info in file_info_list:
+    #         print(
+    #             f"正在上传: {file_info.path} (md5={file_info.md5}, size={file_info.size})"
+    #         )
+    #         success = self.upload_file(file_info)
+    #         if not success:
+    #             fail_list.append(file_info)
+    #     return fail_list
+
+    # @staticmethod
+    # def save_fail_log(fail_list: list[FileInfo], output_path: str) -> None:
+    #     """将失败文件列表保存为 JSON 格式的日志文件
+
+    #     Args:
+    #         fail_list (list[FileInfo]): 失败文件信息列表
+    #         output_path (str): 日志文件输出路径
+    #     """
+    #     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    #     log_data = {
+    #         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    #         "total_failures": len(fail_list),
+    #         "usesBase62EtagsInExport": False,
+    #         "commonPath": "",
+    #         "files": [
+    #             {
+    #                 "path": file_info.path,
+    #                 "md5": file_info.md5,
+    #                 "size": file_info.size,
+    #                 "usesBase62EtagsInExport": len(file_info.md5)
+    #                 != 32,  # 根据 md5 长度判断是否为 base62
+    #             }
+    #             for file_info in fail_list
+    #         ],
+    #     }
+    #     with open(output_path, "w", encoding="utf-8") as f:
+    #         json.dump(log_data, f, ensure_ascii=False, indent=2)

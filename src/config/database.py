@@ -10,10 +10,9 @@ Description: 数据库管理
 """
 import os
 import time
-import dataset
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
-
+import dataset
 
 # 数据库表名
 _TABLE_NAME_ = "p123_fast_link"
@@ -22,16 +21,18 @@ _TABLE_NAME_ = "p123_fast_link"
 # 状态枚举
 class FileStatus:
     """文件状态枚举"""
-    INIT = 0       # 初始化
+
+    INIT = 0  # 初始化
     UPLOADING = 1  # 上传中
-    UPLOADED = 2   # 已上传
-    FAILED = 3     # 上传失败
+    UPLOADED = 2  # 已上传
+    FAILED = 3  # 上传失败
 
 
 @dataclass
 class P123FastLink:
     """p123_fast_link 数据模型"""
-    _id: Optional[int] = None
+
+    p_id: Optional[int] = None
     path: str = ""
     size: int = 0
     md5: str = ""
@@ -47,7 +48,7 @@ class P123FastLink:
         if row is None:
             return None
         return cls(
-            _id=row.get("id"),
+            p_id=row.get("id"),
             path=row.get("path", ""),
             size=row.get("size", 0),
             md5=row.get("md5", ""),
@@ -104,7 +105,7 @@ class Database:
     def _ensure_table(self):
         """确保表存在"""
         if _TABLE_NAME_ not in self.db.tables:
-            self.db.create_table(_TABLE_NAME_, primary_id="id", auto_increment=True)
+            self.db.create_table(_TABLE_NAME_, primary_id="id", primary_increment=True)
 
     @property
     def table(self):
@@ -127,7 +128,10 @@ class Database:
         data["create_at"] = int(time.time())
         data["update_at"] = int(time.time())
         row = self.table.insert(data)
-        return row["id"]
+        # dataset 库返回的可能是整数或字典
+        if isinstance(row, dict):
+            return row["id"]
+        return row
 
     def update(self, _id: int, **kwargs) -> bool:
         """
@@ -267,8 +271,8 @@ class Database:
         """
         existing = self.get_by_path(link.path)
         if existing:
-            self.update(existing._id, **link.to_dict())
-            return existing._id
+            self.update(existing.p_id, **link.to_dict())
+            return existing.p_id
         else:
             return self.insert(link)
 

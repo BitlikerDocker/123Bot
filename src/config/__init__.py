@@ -1,0 +1,20 @@
+#!/usr/bin/env python
+# pylint: disable=E0401,W0718
+
+"""
+Coding: UTF-8
+Author: Bitliker
+Date: 2026/03/31 16:45:29
+Version: 1.0.0
+Description: 配置入口
+"""
+from .config import Config, get_config
+from .database import get_database, P123FastLink, FileStatus
+
+__all__ = [
+    "Config",
+    "get_config",
+    "get_database",
+    "P123FastLink",
+    "FileStatus",
+]

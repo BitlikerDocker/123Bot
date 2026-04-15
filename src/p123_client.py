@@ -15,12 +15,7 @@ from typing import Optional
 
 from p123client import P123Client
 from p123client.client import check_response
-
-MEDIA_PATH = "/media"  # 默认媒体目录
-TOKEN_PATH = os.path.join(MEDIA_PATH, "config", "123-token.txt")
-JSON_PATH = os.path.join(MEDIA_PATH, "json")
-ARCHIVE_PATH = os.path.join(MEDIA_PATH, "archive")
-FAIL_PATH = os.path.join(MEDIA_PATH, "fail")
+from config import Config
 
 
 @dataclasses.dataclass
@@ -37,38 +32,30 @@ class Pan123File:
         """判断是否是文件"""
         return not self.is_dir
 
+
 class Pan123Client(object):
     """123 网盘客户端（手机号+密码登录）"""
 
-    def __init__(self, phone: str = "", password: str = ""):
-        phone = phone or os.getenv("PHONE", "")
-        password = password or os.getenv("PASSWORD", "")
-        if not phone or not password:
-            raise ValueError("账号不能为空，请在环境变量 PHONE 和 PASSWORD 中配置")
+    def __init__(self, cft: Config):
 
-        print(f"获取历史token: {TOKEN_PATH}")
+        if not cft.p123_username or not cft.p123_password:
+            raise ValueError("账号不能为空，请在环境变量 PHONE 和 PASSWORD 中配置")
+        print(f"获取历史token: {cft.p123_token}")
         need_login = True
         try:
-            if not os.path.exists(TOKEN_PATH):
-                print("历史token不存在，需要登录")
-                raise FileNotFoundError("历史token不存在")
-            with open(TOKEN_PATH, "r", encoding="utf-8") as f:
-                token = f.read().strip()
-                if token:
-                    print(f"使用历史token登录，欢迎  [{token}]")
-                    self.client = P123Client(token=token)
-                    self.list_dir()  # 验证token是否有效
-                    need_login = False
+            if not cft.p123_token:
+                raise FileNotFoundError("历史token不存在，需要登录")
+            self.client = P123Client(token=cft.p123_token)
+            self.list_dir()  # 验证token是否有效
+            need_login = False
         except Exception as e:
             print(f"历史token无效，重新登录: {e}")
         if not need_login:
             return
-        self.client = P123Client(passport=phone, password=password)
-        token = self.client.token
-        # 保存token到 123-token.txt，方便后续使用（如浏览器插件）
-        with open(TOKEN_PATH, "w", encoding="utf-8") as f:
-            f.write(token)
-        print(f"登录成功，欢迎 {phone} [{token}]")
+        self.client = P123Client(passport=cft.p123_username, password=cft.p123_password)
+        cft.p123_token = self.client.token
+        cft.save_to_file()
+        print(f"登录成功，欢迎 {cft.p123_username} [{cft.p123_token}]")
 
     def list_dir(self, parent_id: int = 0) -> list[Pan123File]:
         """列出目录下的文件和文件夹"""
