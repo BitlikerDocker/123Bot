@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  p123-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: p123-bot
+    restart: unless-stopped
+    volumes:
+      # 配置目录映射
+      - ./config:/app/config
+      # JSON 文件目录映射
+      - ./tmp/json:/app/tmp/json
+      # 数据库目录映射
+      - ./tmp/config:/app/tmp/config
+    environment:
+      # P123 账户配置 - 从环境变量中读取
+      - P123_ACCOUNT_ID=${P123_ACCOUNT_ID}
+      - P123_PASSWORD=${P123_PASSWORD}
+      - P123_PARENT_ID=${P123_PARENT_ID:-0}
+      # Python 环境配置
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      # 日志级别：DEBUG, INFO, WARNING, ERROR
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - p123-net
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+networks:
+  p123-net:
+    driver: bridge

@@ -5,25 +5,16 @@
 Coding: UTF-8
 Author: Bitliker
 Date: 2026/04/16 11:28:07
-Version: 1.0.0
-Description: 任务管理器 - 单例实现
+Version: 2.0.0
+Description: 任务管理器 - 单例实现，包含所有任务执行逻辑
 """
-from __future__ import annotations
-
-import asyncio
 import os
-from collections import deque
-from dataclasses import dataclass, field
+import threading
 from enum import Enum
+from typing import Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
-from threading import Lock
-from typing import Any, Deque, Dict, Optional
 
-from src.config import get_config, get_logger
-from src.p123_link import Pan123Uploader
-
-
-logger = get_logger(__name__)
+from p123_link import Pan123Uploader
 
 
 class JobType(Enum):
@@ -38,23 +29,29 @@ class JobStatus(Enum):
 
     IDLE = "idle"
     RUNNING = "running"
+    COMPLETED = "completed"
 
 
-@dataclass
-class JobItem:
-    job_type: JobType
-    kwargs: Dict[str, Any] = field(default_factory=dict)
+class JobTask:
+    """单个任务"""
+
+    def __init__(self, task_type: JobType, **kwargs):
+        self.task_type = task_type
+        self.kwargs = kwargs
+        self.status = "pending"
+        self.result = None
+        self.error = None
 
 
 class JobManager:
-    """任务管理器 - 负责管理和执行上传相关的异步任务"""
+    """单例任务管理器 - 负责任务队列和执行"""
 
-    _instance: Optional["JobManager"] = None
-    _instance_lock = Lock()
+    _instance = None
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            with cls._instance_lock:
+            with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
@@ -64,114 +61,156 @@ class JobManager:
         if self._initialized:
             return
 
-        self._initialized = True
-        self._config = get_config()
+        self.status = JobStatus.IDLE
+        self.current_job: Optional[JobTask] = None
+        self.pending_jobs: list = []
+        self._job_lock = threading.Lock()
         self._uploader = Pan123Uploader()
-        self._status = JobStatus.IDLE
-        self._current_job: Optional[JobItem] = None
-        self._pending_jobs: Deque[JobItem] = deque()
-        self._last_message = ""
-        self._run_task: Optional[asyncio.Task] = None
-        self._state_lock = asyncio.Lock()
 
-    async def submit(self, job_type: JobType, **kwargs) -> Dict[str, Any]:
-        job = JobItem(job_type=job_type, kwargs=kwargs)
-        async with self._state_lock:
-            was_running = (
-                self._status == JobStatus.RUNNING
-                or self._current_job is not None
-                or bool(self._pending_jobs)
-            )
-            self._pending_jobs.append(job)
-            self._ensure_runner_locked()
+        # 回调函数列表
+        self._on_finished_callbacks: list = []
+
+        self._initialized = True
+
+    def on_job_finished(self, callback: Callable):
+        """注册任务完成回调"""
+        self._on_finished_callbacks.append(callback)
+
+    def submit_job(self, job_type: JobType, **kwargs) -> bool:
+        """提交任务，如果有任务正在运行则加入待执行队列，返回是否立即执行"""
+        with self._job_lock:
+            task = JobTask(job_type, **kwargs)
+
+            if self.status == JobStatus.RUNNING:
+                # 正在运行，添加到待执行队列
+                self.pending_jobs.append(task)
+                return False
+
+            # 开始执行
+            self.status = JobStatus.RUNNING
+            self.current_job = task
+            return True
+
+    def is_running(self) -> bool:
+        """检查是否有任务正在运行"""
+        with self._job_lock:
+            return self.status == JobStatus.RUNNING
+
+    def execute_current_job(self) -> Tuple[bool, str]:
+        """执行当前任务，返回 (成功标志, 消息)"""
+        with self._job_lock:
+            if not self.current_job:
+                return False, "没有待执行任务"
+
+            task = self.current_job
+
+        try:
+            if task.task_type == JobType.JSON_TO_DB:
+                return self._execute_json_to_db(task)
+            elif task.task_type == JobType.UPLOAD_BY_DB:
+                return self._execute_upload_by_db(task)
+            else:
+                return False, f"未知任务类型: {task.task_type}"
+        except Exception as e:
+            error_msg = f"任务执行失败: {str(e)}"
+            with self._job_lock:
+                if self.current_job == task:
+                    self.current_job.error = str(e)
+            return False, error_msg
+
+    def _execute_json_to_db(self, task: JobTask) -> Tuple[bool, str]:
+        """执行 json_to_db 任务"""
+        file_path = task.kwargs.get("file_path")
+        if not file_path:
+            return False, "文件路径不存在"
+
+        try:
+            ok, msg = self._uploader.json_to_db(file_path)
+            with self._job_lock:
+                if self.current_job == task:
+                    self.current_job.result = {"ok": ok, "msg": msg}
+            return ok, msg
+        except Exception as e:
+            return False, str(e)
+
+    def _execute_upload_by_db(self, task: JobTask) -> Tuple[bool, str]:
+        """执行 upload_by_db 任务"""
+        limit = task.kwargs.get("limit", 10)
+        try:
+            self._uploader.upload_by_db(limit=limit)
+            msg = f"成功处理 {limit} 个文件"
+            with self._job_lock:
+                if self.current_job == task:
+                    self.current_job.result = {"ok": True, "msg": msg}
+            return True, msg
+        except Exception as e:
+            return False, str(e)
+
+    def finish_current_job(
+        self, success: bool = True, message: str = ""
+    ) -> Optional[JobTask]:
+        """完成当前任务，返回下一个待执行任务（如果有的话）"""
+        with self._job_lock:
+            if self.current_job:
+                self.current_job.status = "completed"
+
+            self.status = JobStatus.COMPLETED
+            completed_job = self.current_job
+            self.current_job = None
+
+            # 检查是否有待执行任务
+            if self.pending_jobs:
+                next_task = self.pending_jobs.pop(0)
+                self.status = JobStatus.RUNNING
+                self.current_job = next_task
+
+                # 触发回调
+                for callback in self._on_finished_callbacks:
+                    try:
+                        callback(completed_job, success, message)
+                    except Exception as e:
+                        print(f"回调执行出错: {e}")
+
+                return next_task
+
+            self.status = JobStatus.IDLE
+
+            # 触发回调
+            for callback in self._on_finished_callbacks:
+                try:
+                    callback(completed_job, success, message)
+                except Exception as e:
+                    print(f"回调执行出错: {e}")
+
+            return None
+
+    def get_status(self) -> Dict[str, Any]:
+        """获取任务状态"""
+        with self._job_lock:
+            current_job_info = None
+            if self.current_job:
+                current_job_info = {
+                    "type": self.current_job.task_type.value,
+                    "status": self.current_job.status,
+                }
+
+            pending_jobs_info = [
+                {"type": task.task_type.value} for task in self.pending_jobs
+            ]
+
             return {
-                "queued": was_running,
-                "running": self._status == JobStatus.RUNNING,
-                "pending_count": len(self._pending_jobs),
+                "status": self.status.value,
+                "current_job": current_job_info,
+                "pending_count": len(self.pending_jobs),
+                "pending_jobs": pending_jobs_info,
             }
 
-    async def submit_upload_flow(self, file_path: str | None = None) -> Dict[str, Any]:
-        result = await self.submit(JobType.JSON_TO_DB, file_path=file_path)
-        await self.submit(JobType.UPLOAD_BY_DB)
-        return result
-
-    async def get_status(self) -> Dict[str, Any]:
-        async with self._state_lock:
-            return {
-                "status": self._status.value,
-                "current_job": (
-                    self._current_job.job_type.value if self._current_job else ""
-                ),
-                "pending_jobs": [job.job_type.value for job in self._pending_jobs],
-                "pending_count": len(self._pending_jobs),
-                "last_message": self._last_message,
-            }
-
-    def _ensure_runner_locked(self) -> None:
-        if self._run_task is None or self._run_task.done():
-            self._run_task = asyncio.create_task(self._run())
-
-    async def _run(self) -> None:
-        while True:
-            async with self._state_lock:
-                if not self._pending_jobs:
-                    self._status = JobStatus.IDLE
-                    self._current_job = None
-                    self._run_task = None
-                    return
-
-                self._status = JobStatus.RUNNING
-                self._current_job = self._pending_jobs.popleft()
-                current_job = self._current_job
-
-            try:
-                message = await self._execute(current_job)
-                async with self._state_lock:
-                    self._last_message = message
-            except Exception as exc:
-                logger.exception("Job failed: %s", exc)
-                async with self._state_lock:
-                    self._last_message = f"{current_job.job_type.value} failed: {exc}"
-
-    async def _execute(self, job: JobItem) -> str:
-        if job.job_type == JobType.JSON_TO_DB:
-            return await self._run_json_to_db(job.kwargs.get("file_path"))
-        if job.job_type == JobType.UPLOAD_BY_DB:
-            return await self._run_upload_by_db()
-        raise ValueError(f"Unsupported job type: {job.job_type}")
-
-    async def _run_json_to_db(self, file_path: str | None) -> str:
-        if file_path:
-            ok, message = await asyncio.to_thread(self._uploader.json_to_db, file_path)
-            if not ok:
-                raise RuntimeError(message)
-            return message
-
-        paths = self._scan_json_files()
-        if not paths:
-            return "未找到待处理的 json/txt 文件"
-
-        ok, message = await asyncio.to_thread(self._uploader.json_to_db_batch, paths)
-        if not ok:
-            raise RuntimeError(message)
-        return message
-
-    async def _run_upload_by_db(self) -> str:
-        ok, message, _stats = await asyncio.to_thread(self._uploader.upload_by_db)
-        if not ok:
-            raise RuntimeError(message)
-        return message
-
-    def _scan_json_files(self) -> list[str]:
-        json_dir = Path(self._config.json_path)
-        if not json_dir.exists():
-            return []
-
-        file_paths = []
-        for entry in json_dir.iterdir():
-            if not entry.is_file():
-                continue
-            if entry.suffix.lower() not in {".json", ".txt"}:
-                continue
-            file_paths.append(os.fspath(entry))
-        return sorted(file_paths)
+    def save_file(self, file_path: str, file_data: bytes) -> Tuple[bool, str]:
+        """线程安全的文件保存"""
+        try:
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(file_path, "wb") as f:
+                f.write(file_data)
+            return True, f"文件已保存到 {file_path}"
+        except Exception as e:
+            return False, f"文件保存失败: {str(e)}"

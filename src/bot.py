@@ -1,451 +1,547 @@
 #!/usr/bin/env python
 # pylint: disable=E0401,W0718
-
 """
-Coding: UTF-8
 Author: Bitliker
-Date: 2026/04/14 16:23:18
-Version: 1.0.0
-Description: telegram bot 管理类
-feature:
+Date: 2025-11-14 15:51:11
+Version: 1.0
+Description: tg bot 主程序
 
 """
 import os
-import logging
-import json
-from pathlib import Path
-from datetime import datetime
-from typing import Set, Optional
-
-from telegram import Update, File
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-from config import Config, get_config
+import time
+import threading
+import telebot
+from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from config import Config, md_format_html
+from job import JobManager, JobType
 
 
-# ====================== Bot 状态管理 ======================
-class BotState:
-    """管理 bot 的全局状态"""
+class Bot:
+    """
+    tg bot 主程序
+    """
 
-    def __init__(self):
-        self.upload_task_active = False
-        self.last_upload_time: Optional[datetime] = None
-        self.upload_queue = []
-        self.active_users: Set[int] = set()
-        self.task_status = "空闲"
+    def __init__(self, _cft_: Config) -> None:
+        self.cft = _cft_
+        self.web_site = getattr(_cft_, "web_site", "https://example.com")
+        self.bot = telebot.TeleBot(_cft_.tg_token, parse_mode=None)
 
-    def start_upload_task(self) -> bool:
-        """开始上传任务，返回是否成功启动"""
-        if self.upload_task_active:
-            return False
-        self.upload_task_active = True
-        self.task_status = "上传中..."
-        self.last_upload_time = datetime.now()
-        return True
+        # 任务管理器（单例）
+        self._job_manager = JobManager()
 
-    def finish_upload_task(self):
-        """结束上传任务"""
-        self.upload_task_active = False
-        self.task_status = "空闲"
-        self.upload_queue = []
+        # 并发控制 - 文件操作锁
+        self._file_lock = threading.Lock()
 
-    def reset(self):
-        """重置状态"""
-        self.__init__()
+        # 设置命令的状态管理 {user_id: setting_key}
+        self._setting_state = {}
 
+        # 添加 bot 菜单
+        self._init_bot_menu(self.bot)
+        self._listen_commands(self.bot)
+        self._linsten_document(self.bot)
+        self._listen_setting_input(self.bot)
+        # self._listen_text(self.bot)
+        self.cache_result: dict = {}
+        print(f"Bot start...{self.bot.get_my_name().name}")
 
-# ====================== BotClient 类 ======================
-class BotClient:
-    """Telegram Bot 客户端管理类"""
+    def _init_bot_menu(self, _bot: telebot.TeleBot):
+        """配置 bot 菜单栏"""
+        # 设置键盘命令列表
+        commands = [
+            telebot.types.BotCommand("start", "开始"),
+            telebot.types.BotCommand("help", "帮助"),
+            telebot.types.BotCommand("status", "查询服务状态"),
+            telebot.types.BotCommand("san", "扫描目录json并执行保存到数据库"),
+            telebot.types.BotCommand("upload", "执行秒传"),
+            telebot.types.BotCommand("setting", "设置"),
+        ]
+        _bot.set_my_commands(commands)
 
-    _instance: Optional["BotClient"] = None
-
-    def __init__(self):
+    def _listen_commands(self, _bot: telebot.TeleBot):
         """
-        初始化 BotClient
-
-        Args:
-            bot_token: Telegram Bot Token
-            user_white_list: 白名单用户 ID 集合
-            web_site: 教程网站地址
-            json_path: JSON 文件存储路径
+        监听 指令
         """
-        self._cft_: Config = get_config()
-        self.bot_token = self._cft_.tg_token
-        self.user_white_list = self._cft_.tg_user_white_list
-        self.web_site = "https://example.com/tutorial"
-        self.json_path = Path(self._cft_.json_path)
-        self.json_path.mkdir(parents=True, exist_ok=True)
-        self.state = BotState()
-        self.application: Optional[Application] = None
-        print("BotClient 初始化完成")
-        print(f"JSON 路径: {self.json_path}")
 
-    @classmethod
-    def get_instance(cls) -> "BotClient":
-        """
-        获取单例实例
-
-        Args:
-            bot_token: Telegram Bot Token (可选)
-            user_white_list: 白名单用户 ID (可选)
-            web_site: 教程网站地址 (可选)
-            json_path: JSON 文件路径 (可选)
-
-        Returns:
-            BotClient 实例
-        """
-        if cls._instance is None:
-            # 从环境变量获取配置
-            cls._instance = cls()
-        return cls._instance
-
-    # ==================== 辅助方法 ====================
-
-    def _is_whitelist_user(self, user_id: int, username: str) -> bool:
-        """检查用户是否在白名单中"""
-        if not self.user_white_list:
-            return True
-        return user_id in self.user_white_list or username in self.user_white_list
-
-    def _get_whitelist_check_decorator(self, func):
-        """生成白名单检查装饰器"""
-        # 保存 self 引用供内部函数使用
-        bot_client = self
-
-        async def wrapper(
-            update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs
-        ):
-            user_id = update.effective_user.id
-            username = update.effective_user.username or f"user_{user_id}"
-
-            if not bot_client._is_whitelist_user(user_id, username):
-                error_msg = (
-                    f"❌ 当前用户({user_id})不支持\n"
-                    f"🔍 请查看 TG_USER_WHITE_LIST 环境变量是否包含当前用户id\n"
-                    f"📚 详情使用教程请参考: {bot_client.web_site}"
-                )
-                print(f"用户 {username}({user_id}) 不在白名单中，拒绝访问")
-                await update.message.reply_text(error_msg)
-                return None
-
-            print(f"白名单用户 {username}({user_id}) 访问: {func.__name__}")
-            bot_client.state.active_users.add(user_id)
-            return await func(update, context, *args, **kwargs)
-
-        return wrapper
-
-    # ==================== 命令处理器 ====================
-
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """处理 /start 命令"""
-        welcome_msg = (
-            "🎉 欢迎使用 123Bot 快速秒传工具\n\n"
-            f"📚 详情使用教程请参考: {self.web_site}\n\n"
-            "💡 可用命令:\n"
-            "/start - 重新开始\n"
-            "/help - 查看帮助\n"
-            "/upload - 开启上传任务\n"
-            "/status - 查看任务状态"
-        )
-        await update.message.reply_text(welcome_msg)
-
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """处理 /help 命令"""
-        help_msg = (
-            f"📚 123Bot 使用教程\n\n"
-            f"🔗 完整教程请访问: {self.web_site}\n\n"
-            "📋 核心功能:\n"
-            "• 白名单用户管理\n"
-            "• JSON文件自动保存\n"
-            "• 批量秒传任务管理\n"
-            "• 实时任务状态监控"
-        )
-        await update.message.reply_text(help_msg)
-
-    async def upload_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """处理 /upload 命令 - 开启上传任务"""
-        if self.state.upload_task_active:
-            status_msg = (
-                "🔄 当前任务正在进行中\n\n"
-                f"📊 任务状态: {self.state.task_status}\n"
-                f"⏰ 开始时间: {self.state.last_upload_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                "💡 请稍后再试或使用 /status 查看进度"
-            )
-            await update.message.reply_text(status_msg)
-            return
-
-        # 启动上传任务
-        if self.state.start_upload_task():
-            upload_msg = (
-                "🚀 开始上传任务\n\n"
-                f"📂 扫描路径: {self.json_path}\n"
-                "🔍 正在查找 JSON 文件...\n\n"
-                "💡 提示: 您可以使用 /status 查看任务进度"
+        # 帮助指令
+        def on_help(message: Message):
+            """响应 /help"""
+            self._log(f"获取帮助信息:{message.chat.id} || {message.text}")
+            if not self._filter_user(message):
+                return
+            self.bot.reply_to(
+                message,
+                f"欢迎使用 123Bot 快速秒传工具, 详情使用教程请参考{self.web_site}",
             )
 
-            # 扫描 JSON 文件
-            json_files = list(self.json_path.glob("*.json"))
-            txt_files = list(self.json_path.glob("*.txt"))
+        _bot.message_handler(commands=["help"])(on_help)
+        # start 指令暂时跟 help 一样
+        self.bot.message_handler(commands=["start"])(on_help)
 
-            if not json_files and not txt_files:
-                self.state.finish_upload_task()
-                error_msg = (
-                    "❌ 未找到可上传的文件\n\n"
-                    f"📂 请确保 {self.json_path} 目录下有 .json 或 .txt 文件\n"
-                    "💡 您可以通过发送文件到本机器人来添加文件"
-                )
-                await update.message.reply_text(error_msg)
+        # status 指令
+        def on_status(message: Message):
+            """响应 /status"""
+            self._log(f"查询状态:{message.chat.id} || {message.text}")
+            if not self._filter_user(message):
+                return
+            self._handler_status(message)
+
+        self.bot.message_handler(commands=["status"])(on_status)
+
+        # 扫描目录指令
+        def on_scan(message: Message):
+            """响应 /san - 扫描目录json并执行保存到数据库"""
+            self._log(f"扫描目录:{message.chat.id} || {message.text}")
+            if not self._filter_user(message):
                 return
 
-            # 记录找到的文件
-            self.state.upload_queue = [str(f) for f in json_files + txt_files]
+            if self._job_manager.is_running():
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text="当前任务正在进行中，请稍候...",
+                    msg_id=message.message_id,
+                )
+                return
 
-            # TODO: 在这里实现实际的上传逻辑
+            # 提交扫描任务
+            if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text="扫描任务已启动，正在处理...",
+                    msg_id=message.message_id,
+                )
+                # 在后台线程中执行任务
+                threading.Thread(
+                    target=self._execute_job_in_background, args=(message.chat.id,)
+                ).start()
+            else:
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text="当前有任务进行中，扫描任务已加入队列",
+                    msg_id=message.message_id,
+                )
 
-            # 任务完成后更新状态
-            self.state.finish_upload_task()
+        self.bot.message_handler(commands=["san"])(on_scan)
 
-            result_msg = (
-                "✅ 上传任务完成\n\n"
-                f"📊 处理文件: {len(self.state.upload_queue)} 个\n"
-                f"📂 JSON文件: {len(json_files)} 个\n"
-                f"📄 TXT文件: {len(txt_files)} 个\n"
-                f"⏰ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                f"🔗 详情教程: {self.web_site}"
+        # 上传指令
+        def on_upload(message: Message):
+            """响应 /upload - 执行秒传"""
+            self._log(f"执行上传:{message.chat.id} || {message.text}")
+            if not self._filter_user(message):
+                return
+
+            if self._job_manager.is_running():
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text="当前任务正在进行中，请稍候...",
+                    msg_id=message.message_id,
+                )
+                return
+
+            # 提交上传任务
+            if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text="上传任务已启动...",
+                    msg_id=message.message_id,
+                )
+                # 在后台线程中执行任务
+                threading.Thread(
+                    target=self._execute_job_in_background, args=(message.chat.id,)
+                ).start()
+            else:
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text="当前有任务进行中，上传任务已加入队列",
+                    msg_id=message.message_id,
+                )
+
+        self.bot.message_handler(commands=["upload"])(on_upload)
+
+        # 设置指令
+        def on_setting(message: Message):
+            """响应 /setting - 设置配置"""
+            self._log(f"打开设置:{message.chat.id} || {message.text}")
+            if not self._filter_user(message):
+                return
+
+            # 显示设置菜单
+            markup = InlineKeyboardMarkup()
+            markup.add(
+                InlineKeyboardButton(
+                    "设置 p123_username", callback_data="set_p123_username"
+                ),
+                InlineKeyboardButton(
+                    "设置 p123_password", callback_data="set_p123_password"
+                ),
             )
-            await update.message.reply_text(result_msg)
-        else:
-            await update.message.reply_text("❌ 无法启动任务，请重试")
-
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """处理 /status 命令 - 查看任务状态"""
-        # 获取目录统计信息
-        json_files = list(self.json_path.glob("*.json"))
-        txt_files = list(self.json_path.glob("*.txt"))
-        total_files = len(json_files) + len(txt_files)
-
-        # 格式化活跃用户
-        active_users_info = (
-            "\n".join([f"• {user_id}" for user_id in self.state.active_users])
-            or "无活跃用户"
-        )
-
-        last_time_str = (
-            self.state.last_upload_time.strftime("%Y-%m-%d %H:%M:%S")
-            if self.state.last_upload_time
-            else "从未"
-        )
-
-        status_msg = (
-            f"📊 123Bot 任务状态\n\n"
-            f"🔄 当前状态: {self.state.task_status}\n"
-            f"⏰ 最后操作: {last_time_str}\n\n"
-            f"📂 文件统计:\n"
-            f"   • JSON文件: {len(json_files)} 个\n"
-            f"   • TXT文件: {len(txt_files)} 个\n"
-            f"   • 总计: {total_files} 个\n\n"
-            f"👥 活跃用户:\n{active_users_info}\n\n"
-            f"📋 上传队列: {len(self.state.upload_queue)} 个文件\n"
-            f"💡 提示: 使用 /upload 开始上传任务"
-        )
-        await update.message.reply_text(status_msg)
-
-    # ==================== 文件处理器 ====================
-
-    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """处理文档文件，保存 .json/.txt 文件"""
-        document = update.message.document
-
-        # 检查文件类型
-        if not document.file_name.lower().endswith((".json", ".txt")):
-            await update.message.reply_text(
-                "❌ 不支持的文件类型\n\n"
-                "💡 仅支持 .json 和 .txt 文件\n"
-                "📋 请重新发送正确的文件格式"
+            markup.add(
+                InlineKeyboardButton("设置 p123_token", callback_data="set_p123_token"),
+                InlineKeyboardButton(
+                    "设置 tg_user_white_list", callback_data="set_tg_user_white_list"
+                ),
             )
+            markup.add(
+                InlineKeyboardButton(
+                    "设置 is_auto_upload", callback_data="set_is_auto_upload"
+                ),
+            )
+
+            self._send_message(
+                _chat_id=message.chat.id,
+                _text="请选择要设置的配置项:",
+                msg_id=message.message_id,
+            )
+            self.bot.send_message(
+                chat_id=message.chat.id,
+                text="选择要修改的配置:",
+                reply_markup=markup,
+            )
+
+        self.bot.message_handler(commands=["setting"])(on_setting)
+
+        # 处理回调查询（设置菜单选择）
+        @self.bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
+        def handle_setting_callback(call: telebot.types.CallbackQuery):
+            """处理设置菜单的回调"""
+            user_id = call.from_user.id
+            setting_key = call.data[4:]  # 去掉 "set_" 前缀
+
+            self._setting_state[user_id] = setting_key
+
+            # 提示信息
+            prompt_map = {
+                "p123_username": "请输入 p123_username (123盘手机号码):",
+                "p123_password": "请输入 p123_password (123盘密码):",
+                "p123_token": "请输入 p123_token:",
+                "tg_user_white_list": f"当前白名单: {self.cft.tg_user_white_list}\n请输入新的白名单 (逗号分隔的用户ID):",
+                "is_auto_upload": "请输入 is_auto_upload (true 或 false):",
+            }
+
+            prompt = prompt_map.get(setting_key, "请输入新值:")
+
+            self.bot.send_message(chat_id=call.message.chat.id, text=prompt)
+            self.bot.answer_callback_query(call.id)
+
+    def _linsten_document(self, _bot: telebot.TeleBot):
+        """监听文档文件
+
+        Args:
+            _bot (telebot.TeleBot): 机器人内容
+        """
+
+        def on_document(message: Message):
+            """处理文档文件消息"""
+            self._log(f"接收文件:{message.chat.id} || {message.document.file_name}")
+
+            # 检查用户权限
+            if not self._filter_user(message):
+                return
+
+            # 获取文件信息
+            file_name = message.document.file_name
+            file_extension = os.path.splitext(file_name)[1].lower()
+
+            # 检查文件类型
+            if file_extension not in [".json", ".txt"]:
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text=f"不支持的文件类型: {file_extension}，仅支持 .json 和 .txt 文件",
+                    msg_id=message.message_id,
+                )
+                return
+
+            try:
+                # 线程安全的文件操作
+                with self._file_lock:
+                    # 下载文件
+                    file_info = _bot.get_file(message.document.file_id)
+                    downloaded_file = _bot.download_file(file_info.file_path)
+
+                    # 生成带时间戳的文件名防止重复
+                    timestamp = int(time.time() * 1000000)
+                    base_name, ext = os.path.splitext(file_name)
+                    unique_file_name = f"{base_name}_{timestamp}{ext}"
+                    save_path = os.path.join(self.cft.json_path, unique_file_name)
+
+                    # 使用 JobManager 的方法保存文件
+                    ok, save_msg = self._job_manager.save_file(
+                        save_path, downloaded_file
+                    )
+
+                if not ok:
+                    self._send_message(
+                        _chat_id=message.chat.id,
+                        _text=save_msg,
+                        msg_id=message.message_id,
+                    )
+                    return
+
+                self._log(f"文件已保存: {save_path}")
+
+                # 根据 is_auto_upload 判断是否自动上传
+                if self.cft.is_auto_upload:
+                    # 自动上传模式：直接启动上传任务
+                    if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
+                        # 立即执行
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，自动上传模式启用，处理中...",
+                            msg_id=message.message_id,
+                        )
+                        # 在后台线程中执行任务
+                        threading.Thread(
+                            target=self._execute_job_in_background,
+                            args=(message.chat.id,),
+                        ).start()
+                    else:
+                        # 添加到队列
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，自动上传已加入队列",
+                            msg_id=message.message_id,
+                        )
+                else:
+                    # 手动模式：启动 json_to_db 任务
+                    # 提交 json_to_db 任务
+                    if self._job_manager.submit_job(
+                        JobType.JSON_TO_DB, file_path=save_path
+                    ):
+                        # 立即执行
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，处理中...",
+                            msg_id=message.message_id,
+                        )
+                        # 在后台线程中执行任务
+                        threading.Thread(
+                            target=self._execute_job_in_background,
+                            args=(message.chat.id,),
+                        ).start()
+                    else:
+                        # 添加到队列
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，当前有任务进行中，将队列等待处理",
+                            msg_id=message.message_id,
+                        )
+
+            except Exception as e:  # pylint: disable=broad-except
+                error_msg = f"文件下载失败: {str(e)}"
+                self._log(error_msg)
+                self._send_message(
+                    _chat_id=message.chat.id,
+                    _text=error_msg,
+                    msg_id=message.message_id,
+                )
+
+        # 注册文档处理器
+        _bot.message_handler(content_types=["document"])(on_document)
+
+    def _handle_setting_input(self, message: Message):
+        """处理设置命令的文本输入"""
+        user_id = message.from_user.id
+
+        if user_id not in self._setting_state:
             return
+
+        setting_key = self._setting_state[user_id]
+        user_input = message.text.strip()
 
         try:
-            # 获取文件对象
-            file: File = await context.bot.get_file(document.file_id)
+            if setting_key == "p123_username":
+                self.cft.p123_username = user_input
+                response_msg = f"✅ p123_username 已更新为: {user_input}"
 
-            # 构建保存路径
-            safe_filename = document.file_name.replace("/", "_").replace("\\", "_")
-            save_path = self.json_path / safe_filename
+            elif setting_key == "p123_password":
+                self.cft.p123_password = user_input
+                response_msg = "✅ p123_password 已更新"
 
-            # 下载并保存文件
-            await file.download_to_drive(save_path)
+            elif setting_key == "p123_token":
+                self.cft.p123_token = user_input
+                response_msg = "✅ p123_token 已更新"
 
-            # 记录文件信息
-            file_size = document.file_size / 1024  # KB
-            file_type = "JSON" if safe_filename.endswith(".json") else "TXT"
+            elif setting_key == "tg_user_white_list":
+                # 解析逗号分隔的用户ID
+                user_ids = [int(x.strip()) for x in user_input.split(",") if x.strip()]
+                self.cft.tg_user_white_list = user_ids
+                response_msg = f"✅ tg_user_white_list 已更新为: {user_ids}"
 
-            success_msg = (
-                f"✅ {file_type} 文件保存成功\n\n"
-                f"📁 文件名: {safe_filename}\n"
-                f"💾 大小: {file_size:.1f} KB\n"
-                f"📍 路径: {save_path}\n\n"
-                f"🚀 使用 /upload 命令开始上传任务\n"
-                f"📊 使用 /status 查看当前状态"
+            elif setting_key == "is_auto_upload":
+                # 解析布尔值
+                value = user_input.lower() in ["true", "1", "yes", "是"]
+                self.cft.is_auto_upload = value
+                response_msg = f"✅ is_auto_upload 已更新为: {value}"
+
+            else:
+                response_msg = "❌ 未知的设置项"
+
+            # 保存配置到文件
+            config_path = os.path.join(self.cft.media_path, "config", "config.json")
+            self.cft.save_to_file(config_path)
+
+            # 清除设置状态
+            del self._setting_state[user_id]
+
+            # 发送成功消息
+            self._send_message(
+                _chat_id=message.chat.id,
+                _text=response_msg,
+                msg_id=message.message_id,
             )
 
-            print(f"用户 {update.effective_user.id} 上传了文件: {safe_filename}")
-            await update.message.reply_text(success_msg)
-
-        except Exception as e:
-            error_msg = (
-                f"❌ 文件保存失败\n\n"
-                f"🔍 错误详情: {str(e)}\n"
-                "💡 请检查:\n"
-                "• 目录权限是否正确\n"
-                "• 磁盘空间是否充足\n"
-                "• 文件名是否合法"
+        except ValueError:
+            error_msg = "❌ 输入格式错误，请重试"
+            self._send_message(
+                _chat_id=message.chat.id,
+                _text=error_msg,
+                msg_id=message.message_id,
             )
-            print(f"文件保存失败: {str(e)}")
-            await update.message.reply_text(error_msg)
+            # 清除设置状态
+            del self._setting_state[user_id]
 
-    async def handle_text_json(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """处理文本消息中的 JSON 内容"""
-        text = update.message.text.strip()
+        except Exception as e:  # pylint: disable=broad-except
+            self._log(f"设置保存失败: {e}")
+            error_msg = f"❌ 设置保存失败: {str(e)}"
+            self._send_message(
+                _chat_id=message.chat.id,
+                _text=error_msg,
+                msg_id=message.message_id,
+            )
+            del self._setting_state[user_id]
 
-        # 检查是否是 JSON 格式（简单检查）
-        if text.startswith("{") and text.endswith("}"):
+    def _listen_setting_input(self, _bot: telebot.TeleBot):
+        """监听设置输入的文本消息"""
+
+        def on_text_message(message: Message):
+            """处理文本消息"""
+            user_id = message.from_user.id
+
+            # 只处理处于设置状态的用户消息
+            if user_id in self._setting_state:
+                self._handle_setting_input(message)
+
+        # 注册文本消息处理器
+        _bot.message_handler(func=lambda message: True)(on_text_message)
+
+    def _filter_user(self, message: Message) -> bool:
+        """
+        过滤用户 - 检查用户是否在白名单中
+        """
+        # 如果白名单为空，允许所有用户
+        if not self.cft.tg_user_white_list:
+            return True
+
+        # 检查用户ID是否在白名单中
+        if message.from_user.id not in self.cft.tg_user_white_list:
+            self._send_message(
+                _chat_id=message.chat.id,
+                _text=f"当前用户({message.from_user.id})不支持, 请查看USER_WHITE_LIST变量是否包含当前用户id;详情使用教程请参考{self.web_site}",
+                msg_id=message.message_id,
+            )
+            return False
+        return True
+
+    def _md_format_html(self, text: str) -> str:
+        """将 [Markdown] 转换成 [Html]
+
+        Args:
+            text (str): md 格式文本
+
+        Returns:
+            str: html 格式文本
+        """
+        return md_format_html(text)
+
+    def _send_message(self, _chat_id: str, _text: str, msg_id: str = None) -> Message:
+        """发送消息"""
+        _msg = _text
+        _push_ok = False
+        _count = 0
+        self._log(f"开始推送消息:{_msg}")
+        while not _push_ok and _count < 5:
             try:
-                # 验证 JSON 格式
-                json.loads(text)
-
-                # 生成文件名
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"message_{timestamp}.json"
-                save_path = self.json_path / filename
-
-                # 保存 JSON 文件
-                with open(save_path, "w", encoding="utf-8") as f:
-                    json.dump(json.loads(text), f, indent=2, ensure_ascii=False)
-
-                success_msg = (
-                    "✅ JSON 内容保存成功\n\n"
-                    f"📁 文件名: {filename}\n"
-                    f"📍 路径: {save_path}\n\n"
-                    f"🚀 使用 /upload 命令开始上传任务"
+                message = self.bot.send_message(
+                    chat_id=_chat_id,
+                    text=_msg,
+                    parse_mode="Html",
+                    reply_to_message_id=msg_id,
                 )
-                await update.message.reply_text(success_msg)
-                return
+                _push_ok = True
+                _count += 1
+                return message
+            except Exception as e:  # pylint: disable=broad-except
+                print(e)
+                time.sleep(1)
+        return None
 
-            except json.JSONDecodeError:
-                pass  # 不是有效的 JSON，继续其他处理
+    def start_polling(self, skip_pending: bool = True):
+        """开始轮询（阻塞），可在服务中调用"""
+        try:
+            self.bot.infinity_polling(skip_pending=skip_pending)
+        except KeyboardInterrupt:
+            print("Stopping bot...")
 
-        # 如果不是 JSON，提供帮助信息
-        help_msg = (
-            "💡 检测到文本消息\n\n"
-            "📋 支持的操作:\n"
-            "• 发送 .json 或 .txt 文件\n"
-            "• 直接粘贴 JSON 格式内容\n"
-            "• 使用 /help 查看完整帮助"
+    def _log(self, _message: str):
+        """打印日志"""
+        print(_message)
+
+    # ***********************************业务区 *****************************
+    def _execute_job_in_background(self, chat_id: int):
+        """在后台线程中执行任务"""
+        try:
+            # 执行当前任务
+            success, message = self._job_manager.execute_current_job()
+
+            # 发送执行结果
+            if success:
+                self._send_message(
+                    _chat_id=chat_id,
+                    _text=f"✅ 任务完成: {message}",
+                )
+            else:
+                self._send_message(
+                    _chat_id=chat_id,
+                    _text=f"❌ 任务失败: {message}",
+                )
+
+            # 完成任务，检查是否有待执行任务
+            next_job = self._job_manager.finish_current_job(success, message)
+
+            # 如果有待执行任务，继续执行
+            if next_job:
+                self._log(f"执行待执行任务: {next_job.task_type.value}")
+                self._execute_job_in_background(chat_id)
+
+        except Exception as e:  # pylint: disable=broad-except
+            self._log(f"后台任务执行异常: {e}")
+            self._send_message(
+                _chat_id=chat_id,
+                _text=f"❌ 任务执行异常: {str(e)}",
+            )
+            self._job_manager.finish_current_job(False, str(e))
+
+    def _handler_status(self, message: Message):
+        """处理状态查询指令"""
+        status_info = self._job_manager.get_status()
+
+        status_text = f"当前任务状态: {status_info['status']}\n"
+
+        if status_info["current_job"]:
+            current_job = status_info["current_job"]
+            status_text += f"当前任务: {current_job['type']}\n"
+        else:
+            status_text += "当前任务: 无\n"
+
+        if status_info["pending_count"] > 0:
+            status_text += f"待执行数量: {status_info['pending_count']}\n"
+            pending_types = ", ".join([j["type"] for j in status_info["pending_jobs"]])
+            status_text += f"待执行任务: {pending_types}\n"
+        else:
+            status_text += "待执行数量: 0\n"
+            status_text += "待执行任务: 无\n"
+
+        self._send_message(
+            _chat_id=message.chat.id,
+            _text=status_text,
+            msg_id=message.message_id,
         )
-        await update.message.reply_text(help_msg)
-
-    # ==================== 错误处理器 ====================
-
-    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
-        """全局错误处理器"""
-        print(f"发生异常: {context.error}")
-
-        if update and hasattr(update, "message") and update.message:
-            try:
-                await update.message.reply_text(
-                    "❌ 系统发生错误\n\n"
-                    "🔧 正在尝试恢复服务...\n"
-                    "💡 请稍后重试或联系管理员"
-                )
-            except Exception as e:
-                print(f"错误回复失败: {str(e)}")
-
-    # ==================== 启动和运行 ====================
-
-    def _create_whitelist_handlers(self):
-        """创建带白名单检查的处理器"""
-        whitelist_check = self._get_whitelist_check_decorator
-
-        return {
-            "start": CommandHandler("start", whitelist_check(self.start_command)),
-            "help": CommandHandler("help", whitelist_check(self.help_command)),
-            "upload": CommandHandler("upload", whitelist_check(self.upload_command)),
-            "status": CommandHandler("status", whitelist_check(self.status_command)),
-            "document": MessageHandler(
-                filters.Document.ALL, whitelist_check(self.handle_document)
-            ),
-            "text": MessageHandler(
-                filters.TEXT & ~filters.COMMAND, whitelist_check(self.handle_text_json)
-            ),
-        }
-
-    def run(self):
-        """启动 bot 服务"""
-        # 验证配置
-        if not self.bot_token:
-            print("未配置 TG_TOKEN，请设置环境变量")
-            raise ValueError("TG_TOKEN 未配置")
-
-        if not self.user_white_list:
-            print("TG_USER_WHITE_LIST 为空，允许所有用户访问")
-
-        print("启动 123Bot 服务")
-        print(f"白名单用户: {self.user_white_list}")
-        print(f"JSON 路径: {self.json_path}")
-        print(f"教程网站: {self.web_site}")
-
-        # 创建应用
-        self.application = Application.builder().token(self.bot_token).build()
-
-        # 获取带白名单检查的处理器
-        handlers = self._create_whitelist_handlers()
-
-        # 注册命令处理器
-        self.application.add_handler(handlers["start"])
-        self.application.add_handler(handlers["help"])
-        self.application.add_handler(handlers["upload"])
-        self.application.add_handler(handlers["status"])
-
-        # 注册文件处理器
-        self.application.add_handler(handlers["document"])
-        self.application.add_handler(handlers["text"])
-
-        # 注册错误处理器
-        self.application.add_error_handler(self.error_handler)
-
-        # 启动轮询
-        print("开始轮询...")
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-    def stop(self):
-        """停止 bot 服务"""
-        if self.application:
-            self.application.stop()
-            print("Bot 服务已停止")
-
-    @classmethod
-    def reset_instance(cls):
-        """重置单例实例（主要用于测试）"""
-        if cls._instance and cls._instance.application:
-            cls._instance.stop()
-        cls._instance = None
-
-
-# ====================== 主程序 ======================
-def run_service():
-    """启动 bot 服务"""
-    client = BotClient.get_instance()
-    client.run()
-
-
-if __name__ == "__main__":
-    run_service()
