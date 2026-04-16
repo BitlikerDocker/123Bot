@@ -21,6 +21,7 @@ _P123_PASSWORD_KEY_ = "P123_PASSWORD"
 _P123_PARENT_ID_KEY_ = "P123_PARENT_ID"
 _TG_TOKEN_KEY_ = "TG_TOKEN"
 _TG_USER_WHITE_LIST_KEY_ = "TG_USER_WHITE_LIST"
+_WEB_SITE_KEY_ = "WEB_SITE"
 _MEDIA_PATH_KEY_ = "MEDIA_PATH"
 _CONFIG_PATH_KEY_ = "CONFIG_PATH"
 _JSON_PATH_KEY_ = "JSON_PATH"
@@ -43,6 +44,7 @@ class Config:
     tg_user_white_list: List[int] = dataclasses.field(
         default_factory=list
     )  # telegram白名单用户id列表
+    web_site: str = "https://example.com"  # 教程网址
 
     # 路径配置
     media_path: str = ""  # 媒体根目录
@@ -63,6 +65,7 @@ class Config:
                 "p123_token": self.p123_token,
                 "tg_token": self.tg_token,
                 "tg_user_white_list": self.tg_user_white_list,
+                "web_site": self.web_site,
                 "media_path": self.media_path,
                 "json_path": self.json_path,
                 "archive_path": self.archive_path,
@@ -109,6 +112,7 @@ def _init_by_json_(config_path: str) -> Optional[Config]:
             config.p123_token = data.get("p123_token", "")
             config.tg_token = data.get("tg_token", "")
             config.tg_user_white_list = white_list
+            config.web_site = data.get("web_site", "https://example.com")
             config.media_path = data.get("media_path", "")
             config.json_path = data.get("json_path", "")
             config.archive_path = data.get("archive_path", "")
@@ -174,6 +178,11 @@ def _init_by_env_(config: Config) -> tuple[bool, Config]:
         config.tg_user_white_list = [
             int(x.strip()) for x in white_list.split(",") if x.strip()
         ]
+
+    if not config.web_site or config.web_site == "https://example.com":
+        if os.getenv(_WEB_SITE_KEY_):
+            has_load = True
+            config.web_site = os.getenv(_WEB_SITE_KEY_)
 
     # 设置默认值
     if not config.media_path:

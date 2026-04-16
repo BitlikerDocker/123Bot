@@ -25,12 +25,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
-# ====================== 日志配置 ======================
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+from config import Config, get_config
 
 
 # ====================== Bot 状态管理 ======================
@@ -70,13 +65,7 @@ class BotClient:
 
     _instance: Optional["BotClient"] = None
 
-    def __init__(
-        self,
-        bot_token: str,
-        user_white_list: Set[int],
-        web_site: str = "https://example.com/tutorial",
-        json_path: str = "/media/json",
-    ):
+    def __init__(self):
         """
         初始化 BotClient
 
@@ -86,26 +75,19 @@ class BotClient:
             web_site: 教程网站地址
             json_path: JSON 文件存储路径
         """
-        self.bot_token = bot_token
-        self.user_white_list = user_white_list
-        self.web_site = web_site
-        self.json_path = Path(json_path)
+        self._cft_: Config = get_config()
+        self.bot_token = self._cft_.tg_token
+        self.user_white_list = self._cft_.tg_user_white_list
+        self.web_site = "https://example.com/tutorial"
+        self.json_path = Path(self._cft_.json_path)
         self.json_path.mkdir(parents=True, exist_ok=True)
-
         self.state = BotState()
         self.application: Optional[Application] = None
-
-        logger.info(f"BotClient 初始化完成")
-        logger.info(f"JSON 路径: {self.json_path}")
+        print("BotClient 初始化完成")
+        print(f"JSON 路径: {self.json_path}")
 
     @classmethod
-    def get_instance(
-        cls,
-        bot_token: str = None,
-        user_white_list: Set[int] = None,
-        web_site: str = None,
-        json_path: str = None,
-    ) -> "BotClient":
+    def get_instance(cls) -> "BotClient":
         """
         获取单例实例
 
@@ -120,22 +102,7 @@ class BotClient:
         """
         if cls._instance is None:
             # 从环境变量获取配置
-            if bot_token is None:
-                bot_token = os.getenv("TG_TOKEN", "")
-            if user_white_list is None:
-                white_list_str = os.getenv("TG_USER_WHITE_LIST", "")
-                user_white_list = (
-                    set(int(x.strip()) for x in white_list_str.split(",") if x.strip())
-                    if white_list_str
-                    else set()
-                )
-            if web_site is None:
-                web_site = os.getenv("WEB_SITE", "https://example.com/tutorial")
-            if json_path is None:
-                json_path = os.getenv("JSON_PATH", "/media/json")
-
-            cls._instance = cls(bot_token, user_white_list, web_site, json_path)
-
+            cls._instance = cls()
         return cls._instance
 
     # ==================== 辅助方法 ====================
@@ -148,24 +115,27 @@ class BotClient:
 
     def _get_whitelist_check_decorator(self, func):
         """生成白名单检查装饰器"""
+        # 保存 self 引用供内部函数使用
+        bot_client = self
+
         async def wrapper(
             update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs
         ):
             user_id = update.effective_user.id
             username = update.effective_user.username or f"user_{user_id}"
 
-            if not self._is_whitelist_user(user_id, username):
+            if not bot_client._is_whitelist_user(user_id, username):
                 error_msg = (
                     f"❌ 当前用户({user_id})不支持\n"
                     f"🔍 请查看 TG_USER_WHITE_LIST 环境变量是否包含当前用户id\n"
-                    f"📚 详情使用教程请参考: {self.web_site}"
+                    f"📚 详情使用教程请参考: {bot_client.web_site}"
                 )
-                logger.warning(f"用户 {username}({user_id}) 不在白名单中，拒绝访问")
+                print(f"用户 {username}({user_id}) 不在白名单中，拒绝访问")
                 await update.message.reply_text(error_msg)
                 return None
 
-            logger.info(f"白名单用户 {username}({user_id}) 访问: {func.__name__}")
-            self.state.active_users.add(user_id)
+            print(f"白名单用户 {username}({user_id}) 访问: {func.__name__}")
+            bot_client.state.active_users.add(user_id)
             return await func(update, context, *args, **kwargs)
 
         return wrapper
@@ -267,9 +237,9 @@ class BotClient:
         )
 
         last_time_str = (
-            self.state.last_upload_time.strftime('%Y-%m-%d %H:%M:%S')
+            self.state.last_upload_time.strftime("%Y-%m-%d %H:%M:%S")
             if self.state.last_upload_time
-            else '从未'
+            else "从未"
         )
 
         status_msg = (
@@ -288,9 +258,7 @@ class BotClient:
 
     # ==================== 文件处理器 ====================
 
-    async def handle_document(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """处理文档文件，保存 .json/.txt 文件"""
         document = update.message.document
 
@@ -327,9 +295,7 @@ class BotClient:
                 f"📊 使用 /status 查看当前状态"
             )
 
-            logger.info(
-                f"用户 {update.effective_user.id} 上传了文件: {safe_filename}"
-            )
+            print(f"用户 {update.effective_user.id} 上传了文件: {safe_filename}")
             await update.message.reply_text(success_msg)
 
         except Exception as e:
@@ -341,7 +307,7 @@ class BotClient:
                 "• 磁盘空间是否充足\n"
                 "• 文件名是否合法"
             )
-            logger.error(f"文件保存失败: {str(e)}")
+            print(f"文件保存失败: {str(e)}")
             await update.message.reply_text(error_msg)
 
     async def handle_text_json(
@@ -391,7 +357,7 @@ class BotClient:
 
     async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
         """全局错误处理器"""
-        logger.error(f"发生异常: {context.error}", exc_info=True)
+        print(f"发生异常: {context.error}")
 
         if update and hasattr(update, "message") and update.message:
             try:
@@ -401,7 +367,7 @@ class BotClient:
                     "💡 请稍后重试或联系管理员"
                 )
             except Exception as e:
-                logger.error(f"错误回复失败: {str(e)}")
+                print(f"错误回复失败: {str(e)}")
 
     # ==================== 启动和运行 ====================
 
@@ -426,16 +392,16 @@ class BotClient:
         """启动 bot 服务"""
         # 验证配置
         if not self.bot_token:
-            logger.error("未配置 TG_TOKEN，请设置环境变量")
+            print("未配置 TG_TOKEN，请设置环境变量")
             raise ValueError("TG_TOKEN 未配置")
 
         if not self.user_white_list:
-            logger.warning("TG_USER_WHITE_LIST 为空，所有用户都将被拒绝访问")
+            print("TG_USER_WHITE_LIST 为空，允许所有用户访问")
 
-        logger.info(f"启动 123Bot 服务")
-        logger.info(f"白名单用户: {self.user_white_list}")
-        logger.info(f"JSON 路径: {self.json_path}")
-        logger.info(f"教程网站: {self.web_site}")
+        print("启动 123Bot 服务")
+        print(f"白名单用户: {self.user_white_list}")
+        print(f"JSON 路径: {self.json_path}")
+        print(f"教程网站: {self.web_site}")
 
         # 创建应用
         self.application = Application.builder().token(self.bot_token).build()
@@ -457,14 +423,14 @@ class BotClient:
         self.application.add_error_handler(self.error_handler)
 
         # 启动轮询
-        logger.info("开始轮询...")
+        print("开始轮询...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     def stop(self):
         """停止 bot 服务"""
         if self.application:
             self.application.stop()
-            logger.info("Bot 服务已停止")
+            print("Bot 服务已停止")
 
     @classmethod
     def reset_instance(cls):
@@ -475,11 +441,11 @@ class BotClient:
 
 
 # ====================== 主程序 ======================
-def main():
+def run_service():
     """启动 bot 服务"""
     client = BotClient.get_instance()
     client.run()
 
 
 if __name__ == "__main__":
-    main()
+    run_service()

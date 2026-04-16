@@ -31,10 +31,13 @@ or:
 import os
 import time
 import json
-import logging
 from typing import Tuple, List
 from p123_client import Pan123Client
-from config import P123FastLink, get_database, FileStatus, get_config, Config
+from config import P123FastLink, get_database, FileStatus, get_config, Config, get_logger
+
+
+# 日志配置
+logger = get_logger(__name__)
 
 
 class _EtagConverter:
@@ -310,7 +313,7 @@ class Pan123Uploader:
                                 status=FileStatus.FAILED,
                                 remark=f"秒传失败，需要分片上传，UploadId: {upload_id}",
                             )
-                            print(
+                            logger.warning(
                                 f"秒传失败: {link.path}, size={link.size}, "
                                 f"UploadId={upload_id}"
                             )
@@ -318,7 +321,7 @@ class Pan123Uploader:
                         else:
                             # 秒传成功
                             db.update(link.p_id, status=FileStatus.UPLOADED)
-                            print(
+                            logger.info(
                                 f"上传成功: {link.path}, size={link.size}"
                             )
                             stats["success"] += 1
@@ -330,7 +333,7 @@ class Pan123Uploader:
                             status=FileStatus.FAILED,
                             remark=f"上传异常: {str(e)}",
                         )
-                        print(
+                        logger.error(
                             f"上传异常: {link.path}, size={link.size}, error={e}"
                         )
                         stats["failed"] += 1

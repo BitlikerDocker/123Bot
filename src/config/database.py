@@ -145,7 +145,9 @@ class Database:
             是否更新成功
         """
         kwargs["update_at"] = int(time.time())
-        self.table.update(kwargs, ["id"])
+        # 需要在 kwargs 中添加 id 字段
+        kwargs["id"] = _id
+        self.table.update(kwargs, keys=["id"])
         return True
 
     def delete(self, _id: int) -> bool:
