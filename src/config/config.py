@@ -21,6 +21,7 @@ _P123_PASSWORD_KEY_ = "P123_PASSWORD"
 _P123_PARENT_ID_KEY_ = "P123_PARENT_ID"
 _TG_TOKEN_KEY_ = "TG_TOKEN"
 _TG_USER_WHITE_LIST_KEY_ = "TG_USER_WHITE_LIST"
+_IS_AUTO_UPLOAD_KEY_ = "IS_AUTO_UPLOAD"
 _MEDIA_PATH_KEY_ = "MEDIA_PATH"
 _CONFIG_PATH_KEY_ = "CONFIG_PATH"
 _JSON_PATH_KEY_ = "JSON_PATH"
@@ -43,6 +44,7 @@ class Config:
     tg_user_white_list: List[int] = dataclasses.field(
         default_factory=list
     )  # telegram白名单用户id列表
+    is_auto_upload: bool = False  # 是否自动上传
 
     # 路径配置
     media_path: str = ""  # 媒体根目录
@@ -63,6 +65,7 @@ class Config:
                 "p123_token": self.p123_token,
                 "tg_token": self.tg_token,
                 "tg_user_white_list": self.tg_user_white_list,
+                "is_auto_upload": self.is_auto_upload,
                 "media_path": self.media_path,
                 "json_path": self.json_path,
                 "archive_path": self.archive_path,
@@ -109,6 +112,7 @@ def _init_by_json_(config_path: str) -> Optional[Config]:
             config.p123_token = data.get("p123_token", "")
             config.tg_token = data.get("tg_token", "")
             config.tg_user_white_list = white_list
+            config.is_auto_upload = data.get("is_auto_upload", False)
             config.media_path = data.get("media_path", "")
             config.json_path = data.get("json_path", "")
             config.archive_path = data.get("archive_path", "")

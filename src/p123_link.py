@@ -33,7 +33,14 @@ import time
 import json
 from typing import Tuple, List
 from p123_client import Pan123Client
-from config import P123FastLink, get_database, FileStatus, get_config, Config, get_logger
+from config import (
+    P123FastLink,
+    get_database,
+    FileStatus,
+    get_config,
+    Config,
+    get_logger,
+)
 
 
 # 日志配置
@@ -197,6 +204,11 @@ class Pan123Uploader:
                     db.insert(link)
                 # 提交事务
                 db.db.commit()
+                # 插入成功, 将文件移动到已归档目录
+                archive_dir = self._cft_.archive_path
+                os.makedirs(archive_dir, exist_ok=True)
+                archived_path = os.path.join(archive_dir, os.path.basename(json_path))
+                os.rename(json_path, archived_path)
                 return True, f"成功插入 {len(file_info_list)} 条记录到数据库"
             except Exception as e:
                 # 回滚事务
@@ -321,9 +333,7 @@ class Pan123Uploader:
                         else:
                             # 秒传成功
                             db.update(link.p_id, status=FileStatus.UPLOADED)
-                            logger.info(
-                                f"上传成功: {link.path}, size={link.size}"
-                            )
+                            logger.info(f"上传成功: {link.path}, size={link.size}")
                             stats["success"] += 1
 
                     except Exception as e:
