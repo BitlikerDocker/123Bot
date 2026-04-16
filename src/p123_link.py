@@ -114,55 +114,79 @@ class _EtagConverter:
 class _JsonFileParser:
     """JSON 文件解析器，用于解析 123 网盘导出的文件列表"""
 
-    def __init__(self, json_path: str):
-        """初始化解析器
+    @staticmethod
+    def parse(json_path: str) -> list[P123FastLink]:
+        """解析 json 文件，提取文件信息列表，支持两种格式
+
+        支持格式1（原格式）:
+        {
+            "usesBase62EtagsInExport": true,
+            "commonPath": "根目录/",
+            "files": [{"etag": "...", "size": "...", "path": "..."}]
+        }
+
+        支持格式2（简化格式）:
+        [[md5, size, path], [md5, size, path], ...]
 
         Args:
             json_path (str): json 文件路径
-        """
-        self.json_path = json_path
-        self._data = None
-
-    def parse(self) -> list[P123FastLink]:
-        """解析 json 文件，提取文件信息列表
 
         Returns:
-            list[FileInfo]: 文件信息列表
+            list[P123FastLink]: 文件信息列表
         """
-        with open(self.json_path, "r", encoding="utf-8") as f:
-            self._data = json.load(f)
-
-        uses_base62 = self._data.get("usesBase62EtagsInExport", False)
-        common_path = self._data.get("commonPath", "")
-        files = self._data.get("files", [])
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         file_info_list = []
-        for file in files:
-            etag = file["etag"]
-            size = int(file["size"])
-            path = file["path"]
-            # 如果文件级别没有 usesBase62EtagsInExport 字段，则使用全局的设置
-            file_uses_base62 = (
-                uses_base62
-                if ("usesBase62EtagsInExport" not in file)
-                else file["usesBase62EtagsInExport"]
-            )
-            md5 = etag if not file_uses_base62 else _EtagConverter.to_md5(etag)
-            file_info_list.append(
-                P123FastLink(
-                    md5=md5,
-                    size=size,
-                    path=os.path.join(common_path, path).replace("\\", "/"),
-                    is_base62=file_uses_base62,
+
+        # 检查是否为简化格式（数组格式）
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+            # 简化格式：[[md5, size, path], ...]
+            for item in data:
+                if len(item) >= 3:
+                    md5 = item[0]
+                    size = int(item[1])
+                    path = item[2]
+                    file_info_list.append(
+                        P123FastLink(
+                            md5=md5,
+                            size=size,
+                            path=path,
+                            is_base62=False,
+                        )
+                    )
+        else:
+            # 原格式：{"usesBase62EtagsInExport": ..., "commonPath": ..., "files": [...]}
+            uses_base62 = data.get("usesBase62EtagsInExport", False)
+            common_path = data.get("commonPath", "")
+            files = data.get("files", [])
+            for file in files:
+                etag = file["etag"]
+                size = int(file["size"])
+                path = file["path"]
+                # 如果文件级别没有 usesBase62EtagsInExport 字段，则使用全局的设置
+                file_uses_base62 = (
+                    uses_base62
+                    if ("usesBase62EtagsInExport" not in file)
+                    else file["usesBase62EtagsInExport"]
                 )
-            )
+                md5 = etag if not file_uses_base62 else _EtagConverter.to_md5(etag)
+                file_info_list.append(
+                    P123FastLink(
+                        md5=md5,
+                        size=size,
+                        path=os.path.join(common_path, path).replace("\\", "/"),
+                        is_base62=file_uses_base62,
+                    )
+                )
+
         return file_info_list
 
 
 class Pan123Uploader:
     """123 网盘上传器，提供文件上传和批量上传功能"""
 
-    def __init__(self, parent_id: int = 0, upload_interval: float = 0.5):
+    def __init__(self, upload_interval: float = 0.5):
         """初始化上传器
 
         Args:
@@ -185,7 +209,7 @@ class Pan123Uploader:
         """
         try:
             # 解析 JSON 文件
-            file_info_list = _JsonFileParser(json_path).parse()
+            file_info_list = _JsonFileParser.parse(json_path)
             if not file_info_list:
                 return False, "JSON 文件中没有找到任何文件"
 
@@ -239,7 +263,7 @@ class Pan123Uploader:
             db.db.begin()
             try:
                 for json_path in json_paths:
-                    file_info_list = _JsonFileParser(json_path).parse()
+                    file_info_list = _JsonFileParser.parse(json_path)
                     for link in file_info_list:
                         existing = db.get_by_path(link.path)
                         if existing:
@@ -365,79 +389,3 @@ class Pan123Uploader:
 
         except Exception as e:
             return False, f"上传过程发生错误: {e}", stats
-
-    # def upload_file(self, file_info: FileInfo) -> bool:
-    #     """上传单个文件到 123 网盘
-
-    #     Args:
-    #         file_info (FileInfo): 文件信息对象
-
-    #     Returns:
-    #         bool: 上传是否成功
-    #     """
-    #     try:
-    #         result = self.client.upload_by_md5_to_path(
-    #             file_md5=file_info.md5,
-    #             file_name=os.path.basename(file_info.path),
-    #             file_size=file_info.size,
-    #             remote_dir=os.path.dirname(file_info.path),
-    #             parent_id=self.parent_id,
-    #         )
-    #         time.sleep(self.upload_interval)
-    #         upload_id = result.get("UploadId", "")
-    #         if upload_id:
-    #             print(f"  -> 秒传失败，UploadId: {upload_id}")
-    #             return False  # 提供上传id, 说明没有妙传成功过, 需要后续分片上传
-    #         print(f"  -> 妙传成功: {file_info.path}")
-    #         return True
-    #     except Exception as e:
-    #         print(f"上传失败: {file_info.path} -> {e}")
-    #         return False
-
-    # def upload_by_json(self, json_path: str) -> list[FileInfo]:
-    #     """从 json 文件批量上传文件到 123 网盘
-
-    #     Args:
-    #         json_path (str): json 文件路径
-
-    #     Returns:
-    #         list[FileInfo]: 上传失败的文件信息列表
-    #     """
-    #     file_info_list = _JsonFileParser(json_path).parse()
-    #     fail_list = []
-    #     for file_info in file_info_list:
-    #         print(
-    #             f"正在上传: {file_info.path} (md5={file_info.md5}, size={file_info.size})"
-    #         )
-    #         success = self.upload_file(file_info)
-    #         if not success:
-    #             fail_list.append(file_info)
-    #     return fail_list
-
-    # @staticmethod
-    # def save_fail_log(fail_list: list[FileInfo], output_path: str) -> None:
-    #     """将失败文件列表保存为 JSON 格式的日志文件
-
-    #     Args:
-    #         fail_list (list[FileInfo]): 失败文件信息列表
-    #         output_path (str): 日志文件输出路径
-    #     """
-    #     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    #     log_data = {
-    #         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-    #         "total_failures": len(fail_list),
-    #         "usesBase62EtagsInExport": False,
-    #         "commonPath": "",
-    #         "files": [
-    #             {
-    #                 "path": file_info.path,
-    #                 "md5": file_info.md5,
-    #                 "size": file_info.size,
-    #                 "usesBase62EtagsInExport": len(file_info.md5)
-    #                 != 32,  # 根据 md5 长度判断是否为 base62
-    #             }
-    #             for file_info in fail_list
-    #         ],
-    #     }
-    #     with open(output_path, "w", encoding="utf-8") as f:
-    #         json.dump(log_data, f, ensure_ascii=False, indent=2)

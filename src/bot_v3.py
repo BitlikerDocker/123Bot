@@ -9,9 +9,7 @@ Description: tg bot 主程序
 """
 import os
 import time
-import dataclasses
 import threading
-from pathlib import Path
 import telebot
 from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config, md_format_html
@@ -292,7 +290,8 @@ class Bot:
                         )
                         # 在后台线程中执行任务
                         threading.Thread(
-                            target=self._execute_job_in_background, args=(message.chat.id,)
+                            target=self._execute_job_in_background,
+                            args=(message.chat.id,),
                         ).start()
                     else:
                         # 添加到队列
@@ -315,7 +314,8 @@ class Bot:
                         )
                         # 在后台线程中执行任务
                         threading.Thread(
-                            target=self._execute_job_in_background, args=(message.chat.id,)
+                            target=self._execute_job_in_background,
+                            args=(message.chat.id,),
                         ).start()
                     else:
                         # 添加到队列
