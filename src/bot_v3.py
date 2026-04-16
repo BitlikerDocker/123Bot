@@ -33,7 +33,7 @@ class Bot:
 
         # 并发控制 - 文件操作锁
         self._file_lock = threading.Lock()
-        
+
         # 设置命令的状态管理 {user_id: setting_key}
         self._setting_state = {}
 
@@ -165,21 +165,29 @@ class Bot:
             self._log(f"打开设置:{message.chat.id} || {message.text}")
             if not self._filter_user(message):
                 return
-            
+
             # 显示设置菜单
             markup = InlineKeyboardMarkup()
             markup.add(
-                InlineKeyboardButton("设置 p123_username", callback_data="set_p123_username"),
-                InlineKeyboardButton("设置 p123_password", callback_data="set_p123_password"),
+                InlineKeyboardButton(
+                    "设置 p123_username", callback_data="set_p123_username"
+                ),
+                InlineKeyboardButton(
+                    "设置 p123_password", callback_data="set_p123_password"
+                ),
             )
             markup.add(
                 InlineKeyboardButton("设置 p123_token", callback_data="set_p123_token"),
-                InlineKeyboardButton("设置 tg_user_white_list", callback_data="set_tg_user_white_list"),
+                InlineKeyboardButton(
+                    "设置 tg_user_white_list", callback_data="set_tg_user_white_list"
+                ),
             )
             markup.add(
-                InlineKeyboardButton("设置 is_auto_upload", callback_data="set_is_auto_upload"),
+                InlineKeyboardButton(
+                    "设置 is_auto_upload", callback_data="set_is_auto_upload"
+                ),
             )
-            
+
             self._send_message(
                 _chat_id=message.chat.id,
                 _text="请选择要设置的配置项:",
@@ -192,16 +200,16 @@ class Bot:
             )
 
         self.bot.message_handler(commands=["setting"])(on_setting)
-        
+
         # 处理回调查询（设置菜单选择）
         @self.bot.callback_query_handler(func=lambda call: call.data.startswith("set_"))
         def handle_setting_callback(call: telebot.types.CallbackQuery):
             """处理设置菜单的回调"""
             user_id = call.from_user.id
             setting_key = call.data[4:]  # 去掉 "set_" 前缀
-            
+
             self._setting_state[user_id] = setting_key
-            
+
             # 提示信息
             prompt_map = {
                 "p123_username": "请输入 p123_username (123盘手机号码):",
@@ -210,9 +218,9 @@ class Bot:
                 "tg_user_white_list": f"当前白名单: {self.cft.tg_user_white_list}\n请输入新的白名单 (逗号分隔的用户ID):",
                 "is_auto_upload": "请输入 is_auto_upload (true 或 false):",
             }
-            
+
             prompt = prompt_map.get(setting_key, "请输入新值:")
-            
+
             self.bot.send_message(chat_id=call.message.chat.id, text=prompt)
             self.bot.answer_callback_query(call.id)
 
@@ -272,27 +280,50 @@ class Bot:
 
                 self._log(f"文件已保存: {save_path}")
 
-                # 提交 json_to_db 任务
-                if self._job_manager.submit_job(
-                    JobType.JSON_TO_DB, file_path=save_path
-                ):
-                    # 立即执行
-                    self._send_message(
-                        _chat_id=message.chat.id,
-                        _text=f"文件 {file_name} 已接收，处理中...",
-                        msg_id=message.message_id,
-                    )
-                    # 在后台线程中执行任务
-                    threading.Thread(
-                        target=self._execute_job_in_background, args=(message.chat.id,)
-                    ).start()
+                # 根据 is_auto_upload 判断是否自动上传
+                if self.cft.is_auto_upload:
+                    # 自动上传模式：直接启动上传任务
+                    if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
+                        # 立即执行
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，自动上传模式启用，处理中...",
+                            msg_id=message.message_id,
+                        )
+                        # 在后台线程中执行任务
+                        threading.Thread(
+                            target=self._execute_job_in_background, args=(message.chat.id,)
+                        ).start()
+                    else:
+                        # 添加到队列
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，自动上传已加入队列",
+                            msg_id=message.message_id,
+                        )
                 else:
-                    # 添加到队列
-                    self._send_message(
-                        _chat_id=message.chat.id,
-                        _text=f"文件 {file_name} 已接收，当前有任务进行中，将队列等待处理",
-                        msg_id=message.message_id,
-                    )
+                    # 手动模式：启动 json_to_db 任务
+                    # 提交 json_to_db 任务
+                    if self._job_manager.submit_job(
+                        JobType.JSON_TO_DB, file_path=save_path
+                    ):
+                        # 立即执行
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，处理中...",
+                            msg_id=message.message_id,
+                        )
+                        # 在后台线程中执行任务
+                        threading.Thread(
+                            target=self._execute_job_in_background, args=(message.chat.id,)
+                        ).start()
+                    else:
+                        # 添加到队列
+                        self._send_message(
+                            _chat_id=message.chat.id,
+                            _text=f"文件 {file_name} 已接收，当前有任务进行中，将队列等待处理",
+                            msg_id=message.message_id,
+                        )
 
             except Exception as e:  # pylint: disable=broad-except
                 error_msg = f"文件下载失败: {str(e)}"
@@ -309,55 +340,55 @@ class Bot:
     def _handle_setting_input(self, message: Message):
         """处理设置命令的文本输入"""
         user_id = message.from_user.id
-        
+
         if user_id not in self._setting_state:
             return
-        
+
         setting_key = self._setting_state[user_id]
         user_input = message.text.strip()
-        
+
         try:
             if setting_key == "p123_username":
                 self.cft.p123_username = user_input
                 response_msg = f"✅ p123_username 已更新为: {user_input}"
-            
+
             elif setting_key == "p123_password":
                 self.cft.p123_password = user_input
-                response_msg = f"✅ p123_password 已更新"
-            
+                response_msg = "✅ p123_password 已更新"
+
             elif setting_key == "p123_token":
                 self.cft.p123_token = user_input
-                response_msg = f"✅ p123_token 已更新"
-            
+                response_msg = "✅ p123_token 已更新"
+
             elif setting_key == "tg_user_white_list":
                 # 解析逗号分隔的用户ID
                 user_ids = [int(x.strip()) for x in user_input.split(",") if x.strip()]
                 self.cft.tg_user_white_list = user_ids
                 response_msg = f"✅ tg_user_white_list 已更新为: {user_ids}"
-            
+
             elif setting_key == "is_auto_upload":
                 # 解析布尔值
                 value = user_input.lower() in ["true", "1", "yes", "是"]
                 self.cft.is_auto_upload = value
                 response_msg = f"✅ is_auto_upload 已更新为: {value}"
-            
+
             else:
                 response_msg = "❌ 未知的设置项"
-            
+
             # 保存配置到文件
             config_path = os.path.join(self.cft.media_path, "config", "config.json")
             self.cft.save_to_file(config_path)
-            
+
             # 清除设置状态
             del self._setting_state[user_id]
-            
+
             # 发送成功消息
             self._send_message(
                 _chat_id=message.chat.id,
                 _text=response_msg,
                 msg_id=message.message_id,
             )
-            
+
         except ValueError:
             error_msg = "❌ 输入格式错误，请重试"
             self._send_message(
@@ -367,7 +398,7 @@ class Bot:
             )
             # 清除设置状态
             del self._setting_state[user_id]
-        
+
         except Exception as e:  # pylint: disable=broad-except
             self._log(f"设置保存失败: {e}")
             error_msg = f"❌ 设置保存失败: {str(e)}"
@@ -384,7 +415,7 @@ class Bot:
         def on_text_message(message: Message):
             """处理文本消息"""
             user_id = message.from_user.id
-            
+
             # 只处理处于设置状态的用户消息
             if user_id in self._setting_state:
                 self._handle_setting_input(message)
