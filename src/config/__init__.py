@@ -11,6 +11,7 @@ Description: 配置入口
 from .config import Config, get_config
 from .database import get_database, P123FastLink, FileStatus
 from .logs import setup_logs, get_logger, init_logs
+from .format import md_format_html
 
 __all__ = [
     "Config",
@@ -21,4 +22,5 @@ __all__ = [
     "setup_logs",
     "get_logger",
     "init_logs",
+    "md_format_html",
 ]
