@@ -8,13 +8,12 @@ Date: 2026/04/16 11:28:07
 Version: 2.0.0
 Description: 任务管理器 - 单例实现，包含所有任务执行逻辑
 """
-import os
 import threading
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
 
-from p123_link import Pan123Uploader
+from .p123_link import Pan123Uploader
 
 
 class JobType(Enum):

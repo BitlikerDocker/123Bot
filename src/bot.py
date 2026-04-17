@@ -12,8 +12,8 @@ import time
 import threading
 import telebot
 from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from config import Config, md_format_html
-from job import JobManager, JobType
+from .config import Config, md_format_html
+from .job import JobManager, JobType
 
 
 class Bot:

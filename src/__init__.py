@@ -10,8 +10,8 @@ Description: 123Bot 主入口
 """
 import sys
 import os
-from config import Config, get_config, get_database, get_logger
-from bot import Bot
+from .config import Config, get_config, get_database, get_logger
+from .bot import Bot
 
 
 logger = get_logger(__name__)

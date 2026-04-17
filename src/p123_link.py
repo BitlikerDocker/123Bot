@@ -32,8 +32,8 @@ import os
 import time
 import json
 from typing import Tuple, List
-from p123_client import Pan123Client
-from config import (
+from .p123_client import Pan123Client
+from .config import (
     P123FastLink,
     get_database,
     FileStatus,
