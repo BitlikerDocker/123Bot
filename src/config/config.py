@@ -78,7 +78,7 @@ class Config:
 
     def get_db_path(self) -> str:
         """获取数据库路径"""
-        return os.path.join(self.media_path, "config", "db.sqlite3")
+        return os.path.join(_get_config_dir_(), "db.sqlite3")
 
 
 def _init_by_json_(config_path: str) -> Optional[Config]:
@@ -205,19 +205,23 @@ def _init_by_env_(config: Config) -> tuple[bool, Config]:
     return has_load, config
 
 
-def _get_config_path_() -> str:
-    """获取配置路径"""
+def _get_config_dir_() -> str:
+    """获取config的目录"""
     if os.getenv(_CONFIG_PATH_KEY_):
-        config_path = os.path.join(os.getenv(_CONFIG_PATH_KEY_), "config.json")
+        config_path = os.path.join(os.getenv(_CONFIG_PATH_KEY_))
     else:
         media_path = _get_media_by_env_()
-        config_path = os.getenv(
-            _CONFIG_PATH_KEY_, os.path.join(media_path, "config", "config.json")
-        )
+        config_path = os.getenv(_CONFIG_PATH_KEY_, os.path.join(media_path, "config"))
 
-    if not os.path.exists(os.path.dirname(config_path)):
-        os.makedirs(os.path.dirname(config_path), True)
+    if not os.path.exists(config_path):
+        os.makedirs(config_path, True)
     return config_path
+
+
+def _get_config_path_() -> str:
+    """获取配置路径"""
+    config_dir = _get_config_dir_()
+    return os.path.join(config_dir, "config.json")
 
 
 def _get_media_by_env_() -> str:

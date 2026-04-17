@@ -34,7 +34,8 @@ def main():
         logger.info(f"配置加载成功: {cft}")
 
         # 初始化数据库
-        get_database(os.path.join(cft.get_db_path()))
+        logger.info(f"数据库路径: {cft.get_db_path()}")
+        get_database(cft.get_db_path())
         logger.info("数据库初始化成功")
 
         # 创建并启动 Bot
