@@ -103,7 +103,9 @@ class Bot:
                 return
 
             # 提交扫描任务
-            if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
+            if self._job_manager.submit_job(
+                JobType.JSON_TO_DB, limit=self.cft.upload_limit, file_path=self.cft.json_path
+            ):
                 self._send_message(
                     _chat_id=message.chat.id,
                     _text="扫描任务已启动，正在处理...",
@@ -138,7 +140,9 @@ class Bot:
                 return
 
             # 提交上传任务
-            if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
+            if self._job_manager.submit_job(
+                JobType.UPLOAD_BY_DB, limit=self.cft.upload_limit
+            ):
                 self._send_message(
                     _chat_id=message.chat.id,
                     _text="上传任务已启动...",
@@ -184,6 +188,9 @@ class Bot:
                 InlineKeyboardButton(
                     "设置 is_auto_upload", callback_data="set_is_auto_upload"
                 ),
+                InlineKeyboardButton(
+                    "设置 upload_limit", callback_data="set_upload_limit"
+                ),
             )
 
             self._send_message(
@@ -215,6 +222,7 @@ class Bot:
                 "p123_token": "请输入 p123_token:",
                 "tg_user_white_list": f"当前白名单: {self.cft.tg_user_white_list}\n请输入新的白名单 (逗号分隔的用户ID):",
                 "is_auto_upload": "请输入 is_auto_upload (true 或 false):",
+                "upload_limit": f"当前上传限制: {self.cft.upload_limit}\n请输入新的上传限制数量:",
             }
 
             prompt = prompt_map.get(setting_key, "请输入新值:")
@@ -251,7 +259,7 @@ class Bot:
                 return
 
             try:
-                # 线程安全的文件操作
+                # 1. 进行文件下载, 线程安全的文件操作
                 with self._file_lock:
                     # 下载文件
                     file_info = _bot.get_file(message.document.file_id)
@@ -277,53 +285,76 @@ class Bot:
                     return
 
                 self._log(f"文件已保存: {save_path}")
+                # 2. 将文件转变成db数据，提交任务并执行
+                # 提交 json_to_db 任务
+                if self._job_manager.submit_job(
+                    JobType.JSON_TO_DB, file_path=save_path
+                ):
+                    # 立即执行
+                    self._send_message(
+                        _chat_id=message.chat.id,
+                        _text=f"文件 {file_name} 已接收，处理中...",
+                        msg_id=message.message_id,
+                    )
+                    # 在后台线程中执行任务
+                    threading.Thread(
+                        target=self._execute_job_in_background,
+                        args=(message.chat.id,),
+                    ).start()
+                else:
+                    # 添加到队列
+                    self._send_message(
+                        _chat_id=message.chat.id,
+                        _text=f"文件 {file_name} 已接收，当前有任务进行中，将队列等待处理",
+                        msg_id=message.message_id,
+                    )
 
                 # 根据 is_auto_upload 判断是否自动上传
-                if self.cft.is_auto_upload:
-                    # 自动上传模式：直接启动上传任务
-                    if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=10):
-                        # 立即执行
-                        self._send_message(
-                            _chat_id=message.chat.id,
-                            _text=f"文件 {file_name} 已接收，自动上传模式启用，处理中...",
-                            msg_id=message.message_id,
-                        )
-                        # 在后台线程中执行任务
-                        threading.Thread(
-                            target=self._execute_job_in_background,
-                            args=(message.chat.id,),
-                        ).start()
-                    else:
-                        # 添加到队列
-                        self._send_message(
-                            _chat_id=message.chat.id,
-                            _text=f"文件 {file_name} 已接收，自动上传已加入队列",
-                            msg_id=message.message_id,
-                        )
-                else:
-                    # 手动模式：启动 json_to_db 任务
-                    # 提交 json_to_db 任务
-                    if self._job_manager.submit_job(
-                        JobType.JSON_TO_DB, file_path=save_path
-                    ):
-                        # 立即执行
-                        self._send_message(
-                            _chat_id=message.chat.id,
-                            _text=f"文件 {file_name} 已接收，处理中...",
-                            msg_id=message.message_id,
-                        )
-                        # 在后台线程中执行任务
-                        threading.Thread(
-                            target=self._execute_job_in_background,
-                            args=(message.chat.id,),
-                        ).start()
-                    else:
-                        # 添加到队列
-                        self._send_message(
-                            _chat_id=message.chat.id,
-                            _text=f"文件 {file_name} 已接收，当前有任务进行中，将队列等待处理",
-                            msg_id=message.message_id,
-                        )
+                # if self.cft.is_auto_upload:
+                #     # 自动上传模式：直接启动上传任务
+                #     if self._job_manager.submit_job(JobType.UPLOAD_BY_DB, limit=self.cft.upload_limit):
+                #         # 立即执行
+                #         self._send_message(
+                #             _chat_id=message.chat.id,
+                #             _text=f"文件 {file_name} 已接收，自动上传模式启用，处理中...",
+                #             msg_id=message.message_id,
+                #         )
+                #         # 在后台线程中执行任务
+                #         threading.Thread(
+                #             target=self._execute_job_in_background,
+                #             args=(message.chat.id,),
+                #         ).start()
+                #     else:
+                #         # 添加到队列
+                #         self._send_message(
+                #             _chat_id=message.chat.id,
+                #             _text=f"文件 {file_name} 已接收，自动上传已加入队列",
+                #             msg_id=message.message_id,
+                #         )
+                # else:
+                #     # 手动模式：启动 json_to_db 任务
+                #     # 提交 json_to_db 任务
+                #     if self._job_manager.submit_job(
+                #         JobType.JSON_TO_DB, file_path=save_path
+                #     ):
+                #         # 立即执行
+                #         self._send_message(
+                #             _chat_id=message.chat.id,
+                #             _text=f"文件 {file_name} 已接收，处理中...",
+                #             msg_id=message.message_id,
+                #         )
+                #         # 在后台线程中执行任务
+                #         threading.Thread(
+                #             target=self._execute_job_in_background,
+                #             args=(message.chat.id,),
+                #         ).start()
+                #     else:
+                #         # 添加到队列
+                #         self._send_message(
+                #             _chat_id=message.chat.id,
+                #             _text=f"文件 {file_name} 已接收，当前有任务进行中，将队列等待处理",
+                #             msg_id=message.message_id,
+                #         )
 
             except Exception as e:  # pylint: disable=broad-except
                 error_msg = f"文件下载失败: {str(e)}"
@@ -371,6 +402,14 @@ class Bot:
                 value = user_input.lower() in ["true", "1", "yes", "是"]
                 self.cft.is_auto_upload = value
                 response_msg = f"✅ is_auto_upload 已更新为: {value}"
+
+            elif setting_key == "upload_limit":
+                # 解析整数
+                upload_limit = int(user_input)
+                if upload_limit <= 0:
+                    raise ValueError("上传限制必须大于 0")
+                self.cft.upload_limit = upload_limit
+                response_msg = f"✅ upload_limit 已更新为: {upload_limit}"
 
             else:
                 response_msg = "❌ 未知的设置项"

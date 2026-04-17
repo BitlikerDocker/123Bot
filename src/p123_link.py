@@ -198,6 +198,43 @@ class Pan123Uploader:
         self.upload_interval = upload_interval
         self.client = Pan123Client(self._cft_)
 
+    def json_to_db_batch(self, json_dir: str) -> Tuple[bool, str]:
+        """将指定目录下的所有 json 文件解析到数据库中（事务方式）
+
+        Args:
+            json_dir (str): 包含 json 文件的目录路径
+
+        Returns:
+            Tuple[bool, str]: (是否成功, 错误信息或成功消息)
+        """
+        try:
+            # 获取目录下所有 json 文件路径
+            json_paths = [
+                os.path.join(json_dir, f)
+                for f in os.listdir(json_dir)
+                if f.lower().endswith(".json") or f.lower().endswith(".txt")
+            ]
+            if not json_paths:
+                return False, "指定目录下没有找到任何 JSON 文件"
+
+            # 调用单文件解析方法进行批量处理
+            is_ok = False
+            message_total = ""
+            for json_path in json_paths:
+                is_ok, message = self.json_to_db(json_path)
+                if not is_ok:
+                    logger.error(f"处理文件失败: {json_path}, error: {message}")
+                else:
+                    logger.info(f"成功处理文件: {json_path}, message: {message}")
+                    message_total += f"{os.path.basename(json_path)}: {message}\n"
+
+            return is_ok, message_total
+
+        except FileNotFoundError as e:
+            return False, f"目录不存在: {e}"
+        except Exception as e:
+            return False, f"处理过程中发生错误: {e}"
+
     def json_to_db(self, json_path: str) -> Tuple[bool, str]:
         """将json文件解析到db中（事务方式）
 
@@ -246,7 +283,7 @@ class Pan123Uploader:
         except Exception as e:
             return False, f"数据库操作失败: {e}"
 
-    def json_to_db_batch(self, json_paths: List[str]) -> Tuple[bool, str]:
+    def json_to_db_batch2(self, json_paths: List[str]) -> Tuple[bool, str]:
         """将多个json文件解析到db中（事务方式）
 
         Args:
@@ -270,9 +307,16 @@ class Pan123Uploader:
                             continue
                         db.insert(link)
                         total_count += 1
-
+                    # 插入成功, 将文件移动到已归档目录
+                    archive_dir = self._cft_.archive_path
+                    os.makedirs(archive_dir, exist_ok=True)
+                    archived_path = os.path.join(
+                        archive_dir, os.path.basename(json_path)
+                    )
+                    os.rename(json_path, archived_path)
                 # 提交事务
                 db.db.commit()
+
                 return True, f"成功插入 {total_count} 条记录到数据库"
             except Exception as e:
                 # 回滚事务

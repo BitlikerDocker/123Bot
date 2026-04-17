@@ -45,6 +45,7 @@ class Config:
         default_factory=list
     )  # telegram白名单用户id列表
     is_auto_upload: bool = False  # 是否自动上传
+    upload_limit: int = 100  # 每次上传限制数量
 
     # 路径配置
     media_path: str = ""  # 媒体根目录
@@ -66,6 +67,7 @@ class Config:
                 "tg_token": self.tg_token,
                 "tg_user_white_list": self.tg_user_white_list,
                 "is_auto_upload": self.is_auto_upload,
+                "upload_limit": self.upload_limit,
                 "media_path": self.media_path,
                 "json_path": self.json_path,
                 "archive_path": self.archive_path,
@@ -113,6 +115,7 @@ def _init_by_json_(config_path: str) -> Optional[Config]:
             config.tg_token = data.get("tg_token", "")
             config.tg_user_white_list = white_list
             config.is_auto_upload = data.get("is_auto_upload", False)
+            config.upload_limit = data.get("upload_limit", 100)
             config.media_path = data.get("media_path", "")
             config.json_path = data.get("json_path", "")
             config.archive_path = data.get("archive_path", "")

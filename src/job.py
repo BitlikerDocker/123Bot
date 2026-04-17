@@ -8,6 +8,7 @@ Date: 2026/04/16 11:28:07
 Version: 2.0.0
 Description: 任务管理器 - 单例实现，包含所有任务执行逻辑
 """
+import os
 import threading
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple, Callable
@@ -101,9 +102,8 @@ class JobManager:
         with self._job_lock:
             if not self.current_job:
                 return False, "没有待执行任务"
-
             task = self.current_job
-
+        print(f"execute_current_job:{task.task_type}")
         try:
             if task.task_type == JobType.JSON_TO_DB:
                 return self._execute_json_to_db(task)
@@ -121,11 +121,14 @@ class JobManager:
     def _execute_json_to_db(self, task: JobTask) -> Tuple[bool, str]:
         """执行 json_to_db 任务"""
         file_path = task.kwargs.get("file_path")
+        print(f"开始执行 json_to_db 任务，文件路径: {file_path}")
         if not file_path:
             return False, "文件路径不存在"
-
         try:
-            ok, msg = self._uploader.json_to_db(file_path)
+            if os.path.isdir(file_path):
+                ok, msg = self._uploader.json_to_db_batch(file_path)
+            else:
+                ok, msg = self._uploader.json_to_db(file_path)
             with self._job_lock:
                 if self.current_job == task:
                     self.current_job.result = {"ok": ok, "msg": msg}
@@ -137,12 +140,18 @@ class JobManager:
         """执行 upload_by_db 任务"""
         limit = task.kwargs.get("limit", 10)
         try:
-            self._uploader.upload_by_db(limit=limit)
-            msg = f"成功处理 {limit} 个文件"
+            ok, _, stats = self._uploader.upload_by_db(limit=limit)
+            # 使用实际处理的数量而不是 limit
+            success_count = stats.get("success", 0)
+            failed_count = stats.get("failed", 0)
+            total_count = success_count + failed_count
+            message = (
+                f"完成了 {total_count} 条: 成功 {success_count}, 失败 {failed_count}"
+            )
             with self._job_lock:
                 if self.current_job == task:
-                    self.current_job.result = {"ok": True, "msg": msg}
-            return True, msg
+                    self.current_job.result = {"ok": ok, "msg": message, "stats": stats}
+            return ok, message
         except Exception as e:
             return False, str(e)
 
