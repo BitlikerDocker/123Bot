@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
 
-from .p123_link import Pan123Uploader
+from p123_link import Pan123Uploader
 
 
 class JobType(Enum):
@@ -46,6 +46,7 @@ class JobManager:
     """单例任务管理器 - 负责任务队列和执行"""
 
     _instance = None
+    _initialized = False
     _lock = threading.Lock()
 
     def __new__(cls):

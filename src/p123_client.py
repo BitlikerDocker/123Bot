@@ -15,7 +15,7 @@ from typing import Optional
 
 from p123client import P123Client
 from p123client.client import check_response
-from .config import Config
+from config import Config
 
 
 @dataclasses.dataclass
