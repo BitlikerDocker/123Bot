@@ -12,8 +12,10 @@ on:
       - 'v*'
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: bitlikerdocker/123bot
+  REGISTRY_GHCR: ghcr.io
+  REGISTRY_HUB: docker.io
+  IMAGE_NAME_GHCR: bitlikerdocker/123bot
+  IMAGE_NAME_HUB: bitliker/123bot
 
 jobs:
   build-and-push:
@@ -32,15 +34,22 @@ jobs:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ${{ env.REGISTRY_GHCR }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_HUB }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for GHCR
+        id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME_GHCR }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}},value=${{ github.event.inputs.version }}
@@ -48,14 +57,28 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: Extract metadata for Docker Hub
+        id: meta-hub
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_HUB }}/${{ env.IMAGE_NAME_HUB }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}},value=${{ github.event.inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.inputs.version }}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push to GHCR and Docker Hub
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
-          labels: ${{ steps.meta.outputs.labels }}
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME_GHCR }}:latest
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME_GHCR }}:${{ github.event.inputs.version }}
+            ${{ env.REGISTRY_HUB }}/${{ env.IMAGE_NAME_HUB }}:latest
+            ${{ env.REGISTRY_HUB }}/${{ env.IMAGE_NAME_HUB }}:${{ github.event.inputs.version }}
+          labels: ${{ steps.meta-ghcr.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
