@@ -222,7 +222,7 @@ def _get_config_path_() -> str:
 
 def _get_media_by_env_() -> str:
     """获取媒体路径"""
-    media_path = _get_media_by_env_()
+    media_path = os.getenv(_MEDIA_PATH_KEY_, "/app/media")
     if not os.path.exists(media_path):
         os.makedirs(media_path, True)
     return media_path
