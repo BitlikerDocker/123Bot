@@ -27,7 +27,7 @@ def main():
     try:
         # 设置媒体路径环境变量
         if not os.getenv("MEDIA_PATH"):
-            os.environ["MEDIA_PATH"] = os.path.join("/media")
+            os.environ["MEDIA_PATH"] = os.path.join("/app/media")
 
         # 获取配置
         cft: Config = get_config()

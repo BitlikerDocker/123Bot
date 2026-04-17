@@ -11,7 +11,6 @@ Description: 日志管理模块
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Optional
 
 
@@ -209,10 +208,10 @@ def setup_logs(log_dir: str = None):
     设置日志目录并初始化日志系统
 
     Args:
-        log_dir: 日志文件目录，默认使用 /media/logs
+        log_dir: 日志文件目录，默认使用 /app/media/logs
     """
     if log_dir is None:
-        log_dir = os.getenv("MEDIA_PATH", "/media")
+        log_dir = os.getenv("MEDIA_PATH", "/app/media")
         log_dir = os.path.join(log_dir, "logs")
 
     init_logs(log_dir)

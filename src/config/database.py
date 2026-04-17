@@ -83,14 +83,12 @@ class Database:
         初始化数据库
 
         Args:
-            db_path: 数据库文件路径，默认使用 /media/data/p123_fast_link.db
+            db_path: 数据库文件路径，默认使用 /app/media/data/p123_fast_link.db
         """
         if db_path is None:
-            media_path = os.getenv("MEDIA_PATH", "/media")
-            db_dir = os.path.join(media_path, "data")
-            os.makedirs(db_dir, exist_ok=True)
-            db_path = os.path.join(db_dir, "p123_fast_link.db")
-
+            config_path = os.getenv("CONFIG_PATH", "/app/config")
+            os.makedirs(config_path, exist_ok=True)
+            db_path = os.path.join(config_path, "p123_fast_link.db")
         self.db_path = db_path
         self.db = dataset.connect(f"sqlite:///{db_path}")
         self._ensure_table()

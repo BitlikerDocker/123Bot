@@ -12,7 +12,7 @@
 
 ## 关键路径
 
-- MEDIA = /media
+- MEDIA = /app/media
 - CONFIG_PATH = {MEDIA}/config/config.json
 - JSON_PATH = {MEDIA}/json/
 - ARCHIVE_PATH = {MEDIA}/archive/
@@ -24,7 +24,7 @@
 - PASSWORD: 123盘密码
 - TG_TOKEN: telegram bot token
 - TG_USER_WHITE_LIST: telegram 可以使用的 bot 白名单用户id列表, 多个id用,隔开
-- MEDIA: 媒体根目录, 默认 /media
+- MEDIA: 媒体根目录, 默认 /app/media
 - CONFIG_PATH: 配置文件路径
 - JSON_PATH: json文件的目录
 - ARCHIVE_PATH: 已完成上传的文件归档路径
@@ -45,10 +45,10 @@ config.json -> env
     "tg_user_white_list":[
         "telegram 可以使用的 bot 白名单用户id"
     ],
-    "media":"/media",
-    "json_path":"/media/json",
-    "archive_path":"/media/archive",
-    "fail_path":"/media/fail"
+    "media":"/app/media",
+    "json_path":"/app/media/json",
+    "archive_path":"/app/media/archive",
+    "fail_path":"/app/media/fail"
 }
 ```
 
