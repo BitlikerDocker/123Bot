@@ -18,10 +18,12 @@ import dataclasses
 # 变量定义
 _P123_USER_NAME_KEY_ = "P123_USER_NAME"
 _P123_PASSWORD_KEY_ = "P123_PASSWORD"
+_P123_TOKEN_KEY_ = "P123_TOKEN"
 _P123_PARENT_ID_KEY_ = "P123_PARENT_ID"
 _TG_TOKEN_KEY_ = "TG_TOKEN"
 _TG_USER_WHITE_LIST_KEY_ = "TG_USER_WHITE_LIST"
 _IS_AUTO_UPLOAD_KEY_ = "IS_AUTO_UPLOAD"
+_UPLOAD_LIMIT_KEY_ = "UPLOAD_LIMIT"
 _MEDIA_PATH_KEY_ = "MEDIA_PATH"
 _CONFIG_PATH_KEY_ = "CONFIG_PATH"
 _JSON_PATH_KEY_ = "JSON_PATH"
@@ -63,6 +65,7 @@ class Config:
             data = {
                 "p123_username": self.p123_username,
                 "p123_password": self.p123_password,
+                "p123_parent_id": self.p123_parent_id,
                 "p123_token": self.p123_token,
                 "tg_token": self.tg_token,
                 "tg_user_white_list": self.tg_user_white_list,
@@ -81,6 +84,31 @@ class Config:
     def get_db_path(self) -> str:
         """获取数据库路径"""
         return os.path.join(_get_config_dir_(), "db.sqlite3")
+
+
+def _parse_bool_(value, default: bool = False) -> bool:
+    """将输入值转换成布尔值"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on", "是"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", "否"}:
+        return False
+    return default
+
+
+def _parse_int_(value, default: int = 0) -> int:
+    """将输入值转换成整数"""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _init_by_json_(config_path: str) -> Optional[Config]:
@@ -111,11 +139,12 @@ def _init_by_json_(config_path: str) -> Optional[Config]:
                 ]
             config.p123_username = data.get("p123_username", "")
             config.p123_password = data.get("p123_password", "")
+            config.p123_parent_id = _parse_int_(data.get("p123_parent_id"), 0)
             config.p123_token = data.get("p123_token", "")
             config.tg_token = data.get("tg_token", "")
             config.tg_user_white_list = white_list
-            config.is_auto_upload = data.get("is_auto_upload", False)
-            config.upload_limit = data.get("upload_limit", 100)
+            config.is_auto_upload = _parse_bool_(data.get("is_auto_upload", False))
+            config.upload_limit = _parse_int_(data.get("upload_limit"), 100)
             config.media_path = data.get("media_path", "")
             config.json_path = data.get("json_path", "")
             config.archive_path = data.get("archive_path", "")
@@ -151,9 +180,13 @@ def _init_by_env_(config: Config) -> tuple[bool, Config]:
         has_load = True
         config.p123_password = os.getenv(_P123_PASSWORD_KEY_)
 
+    if not config.p123_token and os.getenv(_P123_TOKEN_KEY_):
+        has_load = True
+        config.p123_token = os.getenv(_P123_TOKEN_KEY_)
+
     if not config.p123_parent_id and os.getenv(_P123_PARENT_ID_KEY_):
         has_load = True
-        config.p123_parent_id = os.getenv(_P123_PARENT_ID_KEY_)
+        config.p123_parent_id = _parse_int_(os.getenv(_P123_PARENT_ID_KEY_), 0)
 
     if not config.tg_token and os.getenv(_TG_TOKEN_KEY_):
         has_load = True
@@ -181,6 +214,18 @@ def _init_by_env_(config: Config) -> tuple[bool, Config]:
         config.tg_user_white_list = [
             int(x.strip()) for x in white_list.split(",") if x.strip()
         ]
+
+    if not config.is_auto_upload and os.getenv(_IS_AUTO_UPLOAD_KEY_) is not None:
+        has_load = True
+        config.is_auto_upload = _parse_bool_(
+            os.getenv(_IS_AUTO_UPLOAD_KEY_), config.is_auto_upload
+        )
+
+    if config.upload_limit == 100 and os.getenv(_UPLOAD_LIMIT_KEY_):
+        has_load = True
+        config.upload_limit = _parse_int_(
+            os.getenv(_UPLOAD_LIMIT_KEY_), config.upload_limit
+        )
 
     # 设置默认值
     if not config.media_path:
@@ -217,7 +262,7 @@ def _get_config_dir_() -> str:
         config_path = os.getenv(_CONFIG_PATH_KEY_, os.path.join(media_path, "config"))
 
     if not os.path.exists(config_path):
-        os.makedirs(config_path, True)
+        os.makedirs(config_path, exist_ok=True)
     return config_path
 
 
@@ -231,7 +276,7 @@ def _get_media_by_env_() -> str:
     """获取媒体路径"""
     media_path = os.getenv(_MEDIA_PATH_KEY_, "/app/media")
     if not os.path.exists(media_path):
-        os.makedirs(media_path, True)
+        os.makedirs(media_path, exist_ok=True)
     return media_path
 
 

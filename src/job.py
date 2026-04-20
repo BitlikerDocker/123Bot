@@ -77,18 +77,22 @@ class JobManager:
         """注册任务完成回调"""
         self._on_finished_callbacks.append(callback)
 
-    def submit_job(self, job_type: JobType, **kwargs) -> bool:
+    def submit_job(self, job_type: JobType, front: bool = False, **kwargs) -> bool:
         """提交任务，如果有任务正在运行则加入待执行队列，返回是否立即执行"""
         with self._job_lock:
             task = JobTask(job_type, **kwargs)
 
             if self.status == JobStatus.RUNNING:
                 # 正在运行，添加到待执行队列
-                self.pending_jobs.append(task)
+                if front:
+                    self.pending_jobs.insert(0, task)
+                else:
+                    self.pending_jobs.append(task)
                 return False
 
             # 开始执行
             self.status = JobStatus.RUNNING
+            task.status = "running"
             self.current_job = task
             return True
 
@@ -117,6 +121,11 @@ class JobManager:
                 if self.current_job == task:
                     self.current_job.error = str(e)
             return False, error_msg
+
+    def get_current_job(self) -> Optional[JobTask]:
+        """获取当前任务快照"""
+        with self._job_lock:
+            return self.current_job
 
     def _execute_json_to_db(self, task: JobTask) -> Tuple[bool, str]:
         """执行 json_to_db 任务"""
@@ -171,6 +180,7 @@ class JobManager:
             if self.pending_jobs:
                 next_task = self.pending_jobs.pop(0)
                 self.status = JobStatus.RUNNING
+                next_task.status = "running"
                 self.current_job = next_task
 
                 # 触发回调

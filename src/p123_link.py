@@ -198,6 +198,24 @@ class Pan123Uploader:
         self.upload_interval = upload_interval
         self.client = Pan123Client(self._cft_)
 
+    def _move_to_target_dir(self, file_path: str, target_dir: str) -> str:
+        """将文件移动到目标目录，若同名则追加时间戳"""
+        os.makedirs(target_dir, exist_ok=True)
+        base_name = os.path.basename(file_path)
+        target_path = os.path.join(target_dir, base_name)
+
+        if os.path.abspath(file_path) == os.path.abspath(target_path):
+            return target_path
+
+        if os.path.exists(target_path):
+            name, ext = os.path.splitext(base_name)
+            target_path = os.path.join(
+                target_dir, f"{name}_{int(time.time() * 1000000)}{ext}"
+            )
+
+        os.replace(file_path, target_path)
+        return target_path
+
     def json_to_db_batch(self, json_dir: str) -> Tuple[bool, str]:
         """将指定目录下的所有 json 文件解析到数据库中（事务方式）
 
@@ -248,10 +266,12 @@ class Pan123Uploader:
             # 解析 JSON 文件
             file_info_list = _JsonFileParser.parse(json_path)
             if not file_info_list:
+                self._move_to_target_dir(json_path, self._cft_.fail_path)
                 return False, "JSON 文件中没有找到任何文件"
 
             # 获取数据库实例
             db = get_database()
+            inserted_count = 0
 
             # 开启事务，批量插入
             db.db.begin()
@@ -263,14 +283,12 @@ class Pan123Uploader:
                         # 如果已存在，跳过或更新
                         continue
                     db.insert(link)
+                    inserted_count += 1
                 # 提交事务
                 db.db.commit()
                 # 插入成功, 将文件移动到已归档目录
-                archive_dir = self._cft_.archive_path
-                os.makedirs(archive_dir, exist_ok=True)
-                archived_path = os.path.join(archive_dir, os.path.basename(json_path))
-                os.rename(json_path, archived_path)
-                return True, f"成功插入 {len(file_info_list)} 条记录到数据库"
+                self._move_to_target_dir(json_path, self._cft_.archive_path)
+                return True, f"成功插入 {inserted_count} 条记录到数据库"
             except Exception as e:
                 # 回滚事务
                 db.db.rollback()
@@ -279,8 +297,12 @@ class Pan123Uploader:
         except FileNotFoundError as e:
             return False, f"文件不存在: {e}"
         except json.JSONDecodeError as e:
+            if os.path.exists(json_path):
+                self._move_to_target_dir(json_path, self._cft_.fail_path)
             return False, f"JSON 解析失败: {e}"
         except Exception as e:
+            if os.path.exists(json_path):
+                self._move_to_target_dir(json_path, self._cft_.fail_path)
             return False, f"数据库操作失败: {e}"
 
     def json_to_db_batch2(self, json_paths: List[str]) -> Tuple[bool, str]:
@@ -309,11 +331,7 @@ class Pan123Uploader:
                         total_count += 1
                     # 插入成功, 将文件移动到已归档目录
                     archive_dir = self._cft_.archive_path
-                    os.makedirs(archive_dir, exist_ok=True)
-                    archived_path = os.path.join(
-                        archive_dir, os.path.basename(json_path)
-                    )
-                    os.rename(json_path, archived_path)
+                    self._move_to_target_dir(json_path, archive_dir)
                 # 提交事务
                 db.db.commit()
 
@@ -354,7 +372,10 @@ class Pan123Uploader:
 
         try:
             # 获取待处理的文件列表
+            # 先尝试获取 INIT 状态的文件，如果为空则获取 FAILED 状态的文件
             file_list = db.get_by_status(status, limit=limit)
+            if not file_list and status == FileStatus.INIT:
+                file_list = db.get_by_status(FileStatus.FAILED, limit=limit)
             if not file_list:
                 return True, "没有需要上传的文件", stats
 

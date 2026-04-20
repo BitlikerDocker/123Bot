@@ -39,7 +39,9 @@ class Pan123Client(object):
     def __init__(self, cft: Config):
 
         if not cft.p123_username or not cft.p123_password:
-            raise ValueError("账号不能为空，请在环境变量 PHONE 和 PASSWORD 中配置")
+            raise ValueError(
+                "账号不能为空，请在环境变量 P123_USER_NAME 和 P123_PASSWORD 中配置"
+            )
         print(f"获取历史token: {cft.p123_token}")
         need_login = True
         try:
